@@ -10,13 +10,13 @@
   <a href="https://discord.gg/3ux2c5xz"><img src="https://img.shields.io/badge/Discord-Join%20Community-5865F2?logo=discord&logoColor=white" alt="Discord"></a>
   <img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="MIT License">
   <img src="https://img.shields.io/badge/version-1.3.0-blue.svg" alt="Version">
-  <img src="https://img.shields.io/badge/tests-1022-green.svg" alt="1022 tests">
+  <img src="https://img.shields.io/badge/tests-1027-green.svg" alt="1027 tests">
   <img src="https://img.shields.io/badge/providers-6-red.svg" alt="6 providers">
 </p>
 
 # SkyClaw
 
-Hyper-performance (Rust) & self-sustaining claw that lives indefinitely in Cloud. 40K lines, 1022 tests, zero warnings.
+Hyper-performance (Rust) & self-sustaining claw that lives indefinitely in Cloud. 40K lines, 1027 tests, zero warnings.
 
 ## What It Does
 
@@ -29,7 +29,7 @@ No web dashboards. No config files to edit. Deploy, paste your API key in Telegr
 | Metric | Value |
 |--------|-------|
 | **Lines of Rust** | 40,810 across 96 source files |
-| **Tests** | 1,022 passing, 0 failures |
+| **Tests** | 1,027 passing, 0 failures |
 | **Clippy warnings** | 0 (CI gate: `-D warnings`) |
 | **Workspace crates** | 13 + 1 binary |
 | **Implemented features** | 43 across 8 phases |
@@ -206,7 +206,7 @@ skyclaw version            Show version info
 ```bash
 cargo check --workspace                                    # Quick compilation check
 cargo build --workspace                                    # Debug build
-cargo test --workspace                                     # Run all 1022 tests
+cargo test --workspace                                     # Run all 1027 tests
 cargo clippy --workspace --all-targets --all-features -- -D warnings  # Lint (0 warnings)
 cargo fmt --all                                            # Format
 cargo build --release                                      # Release build
@@ -221,7 +221,7 @@ cargo build --release                                      # Release build
 ## Release Timeline
 
 ```
-2026-03-09  v1.3.0  ●━━━ Hyper-performance — 4-layer key validation, dynamic system prompt, placeholder defense, 1022 tests
+2026-03-09  v1.3.0  ●━━━ Hyper-performance — 4-layer key validation, dynamic system prompt, placeholder defense, 1027 tests
                     │
 2026-03-09  v1.2.0  ●━━━ Stealth browser — anti-detection patches, session persistence, credential deletion, 1012 tests
                     │
