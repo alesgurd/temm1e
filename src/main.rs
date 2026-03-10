@@ -89,6 +89,8 @@ enum Commands {
     },
     /// Show version information
     Version,
+    /// Check for updates and install if available
+    Update,
 }
 
 #[derive(Subcommand)]
@@ -2097,6 +2099,19 @@ async fn main() -> Result<()> {
                                             workspace_path: workspace_path.clone(),
                                         };
 
+                                        // ── Early reply channel for LLM classifier ────
+                                        // When V2 classifies a message as "order", it sends
+                                        // an immediate acknowledgment through this channel
+                                        // so the user sees a response while the pipeline runs.
+                                        let (early_tx, mut early_rx) = tokio::sync::mpsc::unbounded_channel::<skyclaw_core::types::message::OutboundMessage>();
+                                        let sender_for_early = sender.clone();
+                                        tokio::spawn(async move {
+                                            while let Some(mut early_msg) = early_rx.recv().await {
+                                                early_msg.text = censor_secrets(&early_msg.text);
+                                                send_with_retry(&*sender_for_early, early_msg).await;
+                                            }
+                                        });
+
                                         // ── Panic-guarded message processing ─────────
                                         // Wraps process_message in catch_unwind so a panic
                                         // in context building, tool execution, or provider
@@ -2105,7 +2120,7 @@ async fn main() -> Result<()> {
                                         // next message — the user gets an error reply
                                         // instead of permanent silence.
                                         let process_result = AssertUnwindSafe(
-                                            agent.process_message(&msg, &mut session, interrupt_flag, Some(pending_for_worker.clone()))
+                                            agent.process_message(&msg, &mut session, interrupt_flag, Some(pending_for_worker.clone()), Some(early_tx))
                                         )
                                         .catch_unwind()
                                         .await;
@@ -2927,10 +2942,27 @@ async fn main() -> Result<()> {
                         workspace_path: workspace.clone(),
                     };
 
-                    let process_result =
-                        AssertUnwindSafe(agent.process_message(&msg, &mut session, None, None))
-                            .catch_unwind()
-                            .await;
+                    // Early reply channel for LLM classifier (order acknowledgments)
+                    let (early_tx, mut early_rx) = tokio::sync::mpsc::unbounded_channel::<
+                        skyclaw_core::types::message::OutboundMessage,
+                    >();
+                    let cli_for_early = cli_arc.clone();
+                    tokio::spawn(async move {
+                        while let Some(mut early_msg) = early_rx.recv().await {
+                            early_msg.text = censor_secrets(&early_msg.text);
+                            cli_for_early.send_message(early_msg).await.ok();
+                        }
+                    });
+
+                    let process_result = AssertUnwindSafe(agent.process_message(
+                        &msg,
+                        &mut session,
+                        None,
+                        None,
+                        Some(early_tx),
+                    ))
+                    .catch_unwind()
+                    .await;
 
                     match process_result {
                         Ok(Ok((mut reply, turn_usage))) => {
@@ -3052,6 +3084,157 @@ async fn main() -> Result<()> {
                 println!("{}", output);
             }
         },
+        Commands::Update => {
+            println!("SkyClaw Update");
+            println!("Current version: {}\n", env!("CARGO_PKG_VERSION"));
+
+            // 1. Check if we're in a git repo
+            let git_check = std::process::Command::new("git")
+                .args(["rev-parse", "--is-inside-work-tree"])
+                .output();
+            match git_check {
+                Ok(out) if out.status.success() => {}
+                _ => {
+                    eprintln!("Error: Not a git repository. Run `skyclaw update` from the cloned repo directory.");
+                    std::process::exit(1);
+                }
+            }
+
+            // 2. Fetch remote
+            println!("Fetching latest changes...");
+            let fetch = std::process::Command::new("git")
+                .args(["fetch", "origin"])
+                .output();
+            if let Err(e) = fetch {
+                eprintln!("Error: Failed to fetch from remote: {}", e);
+                std::process::exit(1);
+            }
+
+            // 3. Compare local vs remote
+            let local_head = std::process::Command::new("git")
+                .args(["rev-parse", "HEAD"])
+                .output()
+                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                .unwrap_or_default();
+
+            // Detect the default remote branch (main or master)
+            let remote_branch = {
+                let check_main = std::process::Command::new("git")
+                    .args(["rev-parse", "--verify", "origin/main"])
+                    .output();
+                if check_main.is_ok_and(|o| o.status.success()) {
+                    "origin/main"
+                } else {
+                    "origin/master"
+                }
+            };
+
+            let remote_head = std::process::Command::new("git")
+                .args(["rev-parse", remote_branch])
+                .output()
+                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                .unwrap_or_default();
+
+            if local_head == remote_head {
+                println!("Already up to date.");
+                return Ok(());
+            }
+
+            // 4. Show what's new
+            let log_range = format!("HEAD..{}", remote_branch);
+            let log_output = std::process::Command::new("git")
+                .args(["log", "--oneline", "--no-decorate", &log_range])
+                .output()
+                .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+                .unwrap_or_default();
+
+            let commit_count = log_output.lines().count();
+            println!("{} new commit(s):\n", commit_count);
+            for line in log_output.lines().take(20) {
+                println!("  {}", line);
+            }
+            if commit_count > 20 {
+                println!("  ... and {} more", commit_count - 20);
+            }
+            println!();
+
+            // 5. Check for dirty working tree
+            let status = std::process::Command::new("git")
+                .args(["status", "--porcelain"])
+                .output()
+                .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+                .unwrap_or_default();
+            if !status.trim().is_empty() {
+                eprintln!("Warning: You have uncommitted changes. Stashing before update...");
+                let stash = std::process::Command::new("git")
+                    .args(["stash", "push", "-m", "skyclaw-update-autostash"])
+                    .output();
+                if stash.map_or(true, |o| !o.status.success()) {
+                    eprintln!("Error: Failed to stash changes. Commit or stash manually first.");
+                    std::process::exit(1);
+                }
+                println!("Changes stashed.\n");
+            }
+
+            // 6. Pull
+            let branch = remote_branch.strip_prefix("origin/").unwrap_or("main");
+            println!("Pulling from origin/{}...", branch);
+            let pull = std::process::Command::new("git")
+                .args(["pull", "origin", branch])
+                .output();
+            match pull {
+                Ok(out) if out.status.success() => {
+                    println!("{}", String::from_utf8_lossy(&out.stdout));
+                }
+                Ok(out) => {
+                    eprintln!(
+                        "Error: git pull failed:\n{}",
+                        String::from_utf8_lossy(&out.stderr)
+                    );
+                    std::process::exit(1);
+                }
+                Err(e) => {
+                    eprintln!("Error: git pull failed: {}", e);
+                    std::process::exit(1);
+                }
+            }
+
+            // 7. Build release binary
+            println!("Building release binary... (this may take a few minutes)");
+            let build = std::process::Command::new("cargo")
+                .args(["build", "--release", "--bin", "skyclaw"])
+                .status();
+            match build {
+                Ok(s) if s.success() => {
+                    println!("\nUpdate complete!");
+                    println!("Restart with: skyclaw start");
+                }
+                Ok(s) => {
+                    eprintln!("\nBuild failed with exit code: {:?}", s.code());
+                    eprintln!("The source was updated but the binary was not rebuilt.");
+                    eprintln!("Run `cargo build --release --bin skyclaw` manually to retry.");
+                    std::process::exit(1);
+                }
+                Err(e) => {
+                    eprintln!("\nBuild failed: {}", e);
+                    eprintln!("The source was updated but the binary was not rebuilt.");
+                    std::process::exit(1);
+                }
+            }
+
+            // 8. Pop stash if we stashed earlier
+            let stash_list = std::process::Command::new("git")
+                .args(["stash", "list"])
+                .output()
+                .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+                .unwrap_or_default();
+            if stash_list.contains("skyclaw-update-autostash") {
+                println!("Restoring stashed changes...");
+                let _ = std::process::Command::new("git")
+                    .args(["stash", "pop"])
+                    .output();
+            }
+        }
         Commands::Version => {
             println!("skyclaw {}", env!("CARGO_PKG_VERSION"));
             println!("Cloud-native Rust AI agent runtime — Telegram-native");

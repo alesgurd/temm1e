@@ -13,6 +13,9 @@ fn make_runtime_with_text(text: &str) -> AgentRuntime {
     let memory = Arc::new(MockMemory::new());
     let tools: Vec<Arc<dyn Tool>> = vec![];
 
+    // Disable v2 optimizations — MockProvider returns plain text,
+    // not JSON classification, so the LLM classifier would always
+    // fall back and add an extra provider call.
     AgentRuntime::new(
         provider,
         memory,
@@ -20,6 +23,7 @@ fn make_runtime_with_text(text: &str) -> AgentRuntime {
         "test-model".to_string(),
         Some("You are a test agent.".to_string()),
     )
+    .with_v2_optimizations(false)
 }
 
 #[tokio::test]
@@ -29,7 +33,7 @@ async fn simple_text_response() {
     let mut session = make_session();
 
     let (reply, _turn_usage) = runtime
-        .process_message(&msg, &mut session, None, None)
+        .process_message(&msg, &mut session, None, None, None)
         .await
         .unwrap();
     assert_eq!(reply.text, "Hello from the AI!");
@@ -46,7 +50,7 @@ async fn session_history_grows_after_processing() {
 
     assert!(session.history.is_empty());
     runtime
-        .process_message(&msg, &mut session, None, None)
+        .process_message(&msg, &mut session, None, None, None)
         .await
         .unwrap();
 
@@ -64,7 +68,7 @@ async fn runtime_with_no_text_in_inbound_msg() {
     let mut session = make_session();
 
     let (reply, _turn_usage) = runtime
-        .process_message(&msg, &mut session, None, None)
+        .process_message(&msg, &mut session, None, None, None)
         .await
         .unwrap();
     // Empty message with no attachments returns a friendly error
@@ -75,12 +79,13 @@ async fn runtime_with_no_text_in_inbound_msg() {
 async fn provider_called_exactly_once_for_simple_text() {
     let provider = Arc::new(MockProvider::with_text("response"));
     let memory = Arc::new(MockMemory::new());
-    let runtime = AgentRuntime::new(provider.clone(), memory, vec![], "model".to_string(), None);
+    let runtime = AgentRuntime::new(provider.clone(), memory, vec![], "model".to_string(), None)
+        .with_v2_optimizations(false);
 
     let msg = make_inbound_msg("hello");
     let mut session = make_session();
     runtime
-        .process_message(&msg, &mut session, None, None)
+        .process_message(&msg, &mut session, None, None, None)
         .await
         .unwrap();
 
@@ -119,12 +124,13 @@ async fn runtime_with_memory_entries() {
     ]));
 
     let provider = Arc::new(MockProvider::with_text("I remember about Rust!"));
-    let runtime = AgentRuntime::new(provider.clone(), memory, vec![], "model".to_string(), None);
+    let runtime = AgentRuntime::new(provider.clone(), memory, vec![], "model".to_string(), None)
+        .with_v2_optimizations(false);
 
     let msg = make_inbound_msg("Tell me about Rust");
     let mut session = make_session();
     let (reply, _turn_usage) = runtime
-        .process_message(&msg, &mut session, None, None)
+        .process_message(&msg, &mut session, None, None, None)
         .await
         .unwrap();
 
@@ -147,7 +153,7 @@ async fn multiple_messages_in_sequence() {
     for i in 0..3 {
         let msg = make_inbound_msg(&format!("Message {i}"));
         let (reply, _turn_usage) = runtime
-            .process_message(&msg, &mut session, None, None)
+            .process_message(&msg, &mut session, None, None, None)
             .await
             .unwrap();
         assert_eq!(reply.text, "Reply");

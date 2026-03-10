@@ -25,6 +25,7 @@ use skyclaw_core::MemoryEntryType;
 use skyclaw_core::{Memory, SearchOpts, Tool};
 use tracing::{debug, warn};
 
+use crate::history_pruning::{group_into_turns, remove_orphaned_tool_results};
 use crate::learning;
 use crate::prompt_optimizer::build_tiered_system_prompt;
 use crate::runtime::model_supports_vision;
@@ -293,22 +294,35 @@ pub async fn build_context(
         history[..older_end].to_vec()
     };
 
-    // Walk from newest to oldest, accumulate until budget exceeded
-    let mut kept_older: Vec<ChatMessage> = Vec::new();
-    let mut older_tokens_used = 0;
-    let mut dropped_count = 0;
-    let dropped_total = older_history.len();
+    // Group older messages into atomic turns (tool_use + tool_result are
+    // indivisible) to prevent orphaned tool_result messages that cause
+    // provider API errors.
+    let turns = group_into_turns(&older_history);
 
-    for msg in older_history.iter().rev() {
-        let msg_tokens = estimate_message_tokens(msg);
-        if older_tokens_used + msg_tokens > history_budget {
-            dropped_count = dropped_total - kept_older.len();
+    // Walk from newest to oldest turn, accumulate until budget exceeded.
+    let mut kept_indices: Vec<usize> = Vec::new();
+    let mut older_tokens_used = 0;
+
+    for turn in turns.iter().rev() {
+        let turn_tokens: usize = turn
+            .indices
+            .iter()
+            .map(|&i| estimate_message_tokens(&older_history[i]))
+            .sum();
+        if older_tokens_used + turn_tokens > history_budget {
             break;
         }
-        older_tokens_used += msg_tokens;
-        kept_older.push(msg.clone());
+        older_tokens_used += turn_tokens;
+        kept_indices.extend_from_slice(&turn.indices);
     }
-    kept_older.reverse();
+
+    // Sort indices to maintain original message order.
+    kept_indices.sort_unstable();
+    let kept_older: Vec<ChatMessage> = kept_indices
+        .iter()
+        .map(|&i| older_history[i].clone())
+        .collect();
+    let dropped_count = older_history.len() - kept_older.len();
 
     // If we dropped messages, inject a summary marker
     let mut summary_messages: Vec<ChatMessage> = Vec::new();
@@ -388,6 +402,12 @@ pub async fn build_context(
             );
         }
     }
+
+    // ── Safety net: remove orphaned tool_results ────────────────
+    // After all pruning and stripping, ensure no tool_result references
+    // a tool_use_id that isn't present. This prevents Anthropic 400
+    // errors: "unexpected tool_use_id found in tool_result blocks".
+    remove_orphaned_tool_results(&mut messages);
 
     CompletionRequest {
         model: model.to_string(),

@@ -26,9 +26,11 @@
 //! println!("Kept {} messages, dropped {}", pruned.kept_messages.len(), pruned.dropped_count);
 //! ```
 
+use std::collections::HashSet;
+
 use serde::{Deserialize, Serialize};
 use skyclaw_core::types::message::{ChatMessage, ContentPart, MessageContent, Role};
-use tracing::debug;
+use tracing::{debug, warn};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -95,6 +97,140 @@ pub struct PrunedHistory {
     pub summary: String,
     /// Number of messages that were dropped.
     pub dropped_count: usize,
+}
+
+// ---------------------------------------------------------------------------
+// Atomic turn grouping — prevents orphaned tool_result messages
+// ---------------------------------------------------------------------------
+
+/// A group of messages that form an atomic conversation turn.
+///
+/// Tool-use and tool-result pairs are kept together as indivisible units.
+/// Pruning operates on turns, not individual messages, to prevent orphaned
+/// `tool_result` messages that cause provider API errors (e.g., Anthropic
+/// 400: `unexpected tool_use_id found in tool_result blocks`).
+#[derive(Debug, Clone)]
+pub struct ConversationTurn {
+    /// Indices into the original message array.
+    pub indices: Vec<usize>,
+}
+
+/// Extract tool_use IDs from a message's content parts.
+fn extract_tool_use_ids(msg: &ChatMessage) -> Vec<String> {
+    match &msg.content {
+        MessageContent::Parts(parts) => parts
+            .iter()
+            .filter_map(|p| match p {
+                ContentPart::ToolUse { id, .. } => Some(id.clone()),
+                _ => None,
+            })
+            .collect(),
+        _ => vec![],
+    }
+}
+
+/// Extract tool_result tool_use_ids from a message's content parts.
+fn extract_tool_result_ids(msg: &ChatMessage) -> Vec<String> {
+    match &msg.content {
+        MessageContent::Parts(parts) => parts
+            .iter()
+            .filter_map(|p| match p {
+                ContentPart::ToolResult { tool_use_id, .. } => Some(tool_use_id.clone()),
+                _ => None,
+            })
+            .collect(),
+        _ => vec![],
+    }
+}
+
+/// Group messages into atomic conversation turns.
+///
+/// Messages containing `tool_use` are grouped with their corresponding
+/// `tool_result` messages. This ensures pruning never orphans a `tool_result`
+/// by dropping its `tool_use` (or vice versa), which would cause provider
+/// API errors.
+///
+/// The algorithm walks forward through messages:
+/// 1. When an Assistant message contains `tool_use` parts, it starts a group.
+/// 2. Subsequent messages with matching `tool_result` IDs are added to the group.
+/// 3. All other messages form single-message groups.
+pub fn group_into_turns(messages: &[ChatMessage]) -> Vec<ConversationTurn> {
+    let mut turns: Vec<ConversationTurn> = Vec::new();
+    let mut i = 0;
+
+    while i < messages.len() {
+        let tool_use_ids = extract_tool_use_ids(&messages[i]);
+
+        if !tool_use_ids.is_empty() {
+            // This message has tool_use parts — group with matching tool_results
+            let mut indices = vec![i];
+            let mut pending_ids: HashSet<String> = tool_use_ids.into_iter().collect();
+
+            // Look ahead for matching tool_result messages
+            let mut j = i + 1;
+            while j < messages.len() && !pending_ids.is_empty() {
+                let result_ids = extract_tool_result_ids(&messages[j]);
+                if result_ids.iter().any(|id| pending_ids.contains(id)) {
+                    indices.push(j);
+                    for id in &result_ids {
+                        pending_ids.remove(id);
+                    }
+                    j += 1;
+                } else {
+                    break;
+                }
+            }
+
+            turns.push(ConversationTurn { indices });
+            i = j;
+        } else {
+            // Non-tool-use message — standalone turn
+            turns.push(ConversationTurn { indices: vec![i] });
+            i += 1;
+        }
+    }
+
+    turns
+}
+
+/// Remove orphaned `tool_result` messages whose `tool_use_id` doesn't match
+/// any `tool_use` in the message list. This is a safety net applied after
+/// all pruning to catch pre-existing orphans from crashes or prior bugs.
+pub fn remove_orphaned_tool_results(messages: &mut Vec<ChatMessage>) {
+    // Collect all tool_use IDs present in the messages
+    let tool_use_ids: HashSet<String> = messages
+        .iter()
+        .flat_map(|msg| match &msg.content {
+            MessageContent::Parts(parts) => parts
+                .iter()
+                .filter_map(|p| match p {
+                    ContentPart::ToolUse { id, .. } => Some(id.clone()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>(),
+            _ => vec![],
+        })
+        .collect();
+
+    let before = messages.len();
+
+    // Remove messages that contain only tool_results referencing missing tool_use IDs
+    messages.retain(|msg| {
+        let result_ids = extract_tool_result_ids(msg);
+        if result_ids.is_empty() {
+            return true; // Not a tool_result message — keep
+        }
+        // Keep if ALL tool_result IDs have matching tool_use IDs
+        result_ids.iter().all(|id| tool_use_ids.contains(id))
+    });
+
+    let removed = before - messages.len();
+    if removed > 0 {
+        warn!(
+            removed,
+            "Removed orphaned tool_result messages (no matching tool_use)"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -577,29 +713,56 @@ pub fn prune_history(history: &[ChatMessage], max_messages: usize) -> PrunedHist
         };
     }
 
-    // Score all messages.
-    let mut scored: Vec<ScoredMessage> = history
+    // Group messages into atomic conversation turns so tool_use/tool_result
+    // pairs are never split during pruning.
+    let turns = group_into_turns(history);
+
+    // Score each turn by the maximum score of its constituent messages.
+    // A turn is only as droppable as its most important member.
+    let mut scored_turns: Vec<(usize, f32)> = turns
         .iter()
         .enumerate()
-        .map(|(i, msg)| score_message(msg, i, total))
+        .map(|(turn_idx, turn)| {
+            let max_score = turn
+                .indices
+                .iter()
+                .map(|&msg_idx| score_message(&history[msg_idx], msg_idx, total).score)
+                .fold(f32::NEG_INFINITY, f32::max);
+            (turn_idx, max_score)
+        })
         .collect();
 
-    // Sort by score ascending so we can drop from the front.
-    scored.sort_by(|a, b| {
-        a.score
-            .partial_cmp(&b.score)
+    // Sort by score ascending so we drop lowest-scored turns first.
+    scored_turns.sort_by(|a, b| {
+        a.1.partial_cmp(&b.1)
             .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| a.index.cmp(&b.index))
+            .then_with(|| a.0.cmp(&b.0))
     });
 
-    let drop_count = total - max_messages;
+    // Drop lowest-scored turns until we've removed enough messages.
+    let msgs_to_drop = total - max_messages;
+    let mut drop_msg_count = 0;
+    let mut drop_turn_indices: Vec<usize> = Vec::new();
 
-    // Collect indices to drop (the lowest-scored messages).
-    let mut drop_indices: Vec<usize> = scored.iter().take(drop_count).map(|s| s.index).collect();
-    drop_indices.sort_unstable();
+    for &(turn_idx, _score) in &scored_turns {
+        if drop_msg_count >= msgs_to_drop {
+            break;
+        }
+        drop_turn_indices.push(turn_idx);
+        drop_msg_count += turns[turn_idx].indices.len();
+    }
+
+    // Collect all message indices to drop.
+    let drop_msg_indices: HashSet<usize> = drop_turn_indices
+        .iter()
+        .flat_map(|&turn_idx| turns[turn_idx].indices.iter().copied())
+        .collect();
 
     // Collect dropped messages for summary generation.
-    let dropped_msgs: Vec<&ChatMessage> = drop_indices.iter().map(|&i| &history[i]).collect();
+    let mut sorted_drop_indices: Vec<usize> = drop_msg_indices.iter().copied().collect();
+    sorted_drop_indices.sort_unstable();
+    let dropped_msgs: Vec<&ChatMessage> =
+        sorted_drop_indices.iter().map(|&i| &history[i]).collect();
 
     // Build the summary.
     let summary = generate_pruned_summary(&dropped_msgs);
@@ -608,21 +771,24 @@ pub fn prune_history(history: &[ChatMessage], max_messages: usize) -> PrunedHist
     let kept_messages: Vec<ChatMessage> = history
         .iter()
         .enumerate()
-        .filter(|(i, _)| !drop_indices.contains(i))
+        .filter(|(i, _)| !drop_msg_indices.contains(i))
         .map(|(_, msg)| msg.clone())
         .collect();
+
+    let actual_dropped = drop_msg_indices.len();
 
     debug!(
         total,
         kept = kept_messages.len(),
-        dropped = drop_count,
-        "Pruned conversation history by semantic importance"
+        dropped = actual_dropped,
+        turns = turns.len(),
+        "Pruned conversation history by semantic importance (turn-aware)"
     );
 
     PrunedHistory {
         kept_messages,
         summary,
-        dropped_count: drop_count,
+        dropped_count: actual_dropped,
     }
 }
 
@@ -1352,5 +1518,227 @@ mod tests {
             scored.importance > MessageImportance::Trivial,
             "Long message starting with 'Hi' should not be trivial"
         );
+    }
+
+    // -- Turn grouping tests --------------------------------------------------
+
+    fn tool_use_msg_with_id(name: &str, id: &str) -> ChatMessage {
+        ChatMessage {
+            role: Role::Assistant,
+            content: MessageContent::Parts(vec![ContentPart::ToolUse {
+                id: id.to_string(),
+                name: name.to_string(),
+                input: json!({"command": "ls"}),
+            }]),
+        }
+    }
+
+    fn tool_result_msg_with_id(id: &str, content: &str) -> ChatMessage {
+        ChatMessage {
+            role: Role::Tool,
+            content: MessageContent::Parts(vec![ContentPart::ToolResult {
+                tool_use_id: id.to_string(),
+                content: content.to_string(),
+                is_error: false,
+            }]),
+        }
+    }
+
+    #[test]
+    fn group_into_turns_no_tools() {
+        let history = vec![user_msg("Hello"), assistant_msg("Hi")];
+        let turns = group_into_turns(&history);
+        assert_eq!(turns.len(), 2);
+        assert_eq!(turns[0].indices, vec![0]);
+        assert_eq!(turns[1].indices, vec![1]);
+    }
+
+    #[test]
+    fn group_into_turns_pairs_tool_use_with_result() {
+        let history = vec![
+            user_msg("Run ls"),                              // 0
+            tool_use_msg_with_id("shell", "tu-1"),           // 1
+            tool_result_msg_with_id("tu-1", "file1\nfile2"), // 2
+            assistant_msg("Here are your files"),            // 3
+        ];
+        let turns = group_into_turns(&history);
+        assert_eq!(turns.len(), 3);
+        assert_eq!(turns[0].indices, vec![0]); // user msg alone
+        assert_eq!(turns[1].indices, vec![1, 2]); // tool_use + tool_result grouped
+        assert_eq!(turns[2].indices, vec![3]); // assistant text alone
+    }
+
+    #[test]
+    fn group_into_turns_multiple_tool_uses() {
+        let history = vec![
+            user_msg("Do two things"),                        // 0
+            tool_use_msg_with_id("shell", "tu-1"),            // 1
+            tool_result_msg_with_id("tu-1", "result1"),       // 2
+            tool_use_msg_with_id("file_read", "tu-2"),        // 3
+            tool_result_msg_with_id("tu-2", "file contents"), // 4
+            assistant_msg("Done with both"),                  // 5
+        ];
+        let turns = group_into_turns(&history);
+        assert_eq!(turns.len(), 4);
+        assert_eq!(turns[0].indices, vec![0]); // user msg
+        assert_eq!(turns[1].indices, vec![1, 2]); // first tool pair
+        assert_eq!(turns[2].indices, vec![3, 4]); // second tool pair
+        assert_eq!(turns[3].indices, vec![5]); // assistant text
+    }
+
+    #[test]
+    fn group_into_turns_multi_tool_use_in_single_message() {
+        // An assistant message with two tool_use parts
+        let msg = ChatMessage {
+            role: Role::Assistant,
+            content: MessageContent::Parts(vec![
+                ContentPart::ToolUse {
+                    id: "tu-a".to_string(),
+                    name: "shell".to_string(),
+                    input: json!({"command": "ls"}),
+                },
+                ContentPart::ToolUse {
+                    id: "tu-b".to_string(),
+                    name: "file_read".to_string(),
+                    input: json!({"path": "test.txt"}),
+                },
+            ]),
+        };
+        let history = vec![
+            user_msg("Do things"),                        // 0
+            msg,                                          // 1 (two tool_uses)
+            tool_result_msg_with_id("tu-a", "ls output"), // 2
+            tool_result_msg_with_id("tu-b", "file text"), // 3
+            assistant_msg("All done"),                    // 4
+        ];
+        let turns = group_into_turns(&history);
+        assert_eq!(turns.len(), 3);
+        assert_eq!(turns[0].indices, vec![0]); // user msg
+        assert_eq!(turns[1].indices, vec![1, 2, 3]); // tool_use + both results
+        assert_eq!(turns[2].indices, vec![4]); // assistant text
+    }
+
+    #[test]
+    fn group_into_turns_empty() {
+        let turns = group_into_turns(&[]);
+        assert!(turns.is_empty());
+    }
+
+    // -- Orphan prevention in pruning tests -----------------------------------
+
+    #[test]
+    fn prune_never_orphans_tool_result() {
+        // Build a history where a tool_use+result pair is low importance
+        // but must be kept/dropped together.
+        let history = vec![
+            user_msg("hello"),                                   // 0: Trivial
+            tool_use_msg_with_id("shell", "tu-1"),               // 1: Medium (tool use)
+            tool_result_msg_with_id("tu-1", "ok"),               // 2: Low (trivial result)
+            user_msg("decision: use PostgreSQL"),                // 3: Critical
+            assistant_msg("The deployment is done and working"), // 4: Medium + recency
+        ];
+
+        let pruned = prune_history(&history, 3);
+
+        // Check: if any tool_result is present, its matching tool_use must also be present
+        let kept_tool_use_ids: Vec<String> = pruned
+            .kept_messages
+            .iter()
+            .flat_map(extract_tool_use_ids)
+            .collect();
+        let kept_tool_result_ids: Vec<String> = pruned
+            .kept_messages
+            .iter()
+            .flat_map(extract_tool_result_ids)
+            .collect();
+
+        for result_id in &kept_tool_result_ids {
+            assert!(
+                kept_tool_use_ids.contains(result_id),
+                "Orphaned tool_result '{result_id}' — its tool_use was dropped!"
+            );
+        }
+    }
+
+    #[test]
+    fn prune_drops_tool_pair_together() {
+        // Ensure when a tool pair is dropped, BOTH messages go
+        let history = vec![
+            user_msg("hello"),                                    // 0: Trivial
+            assistant_msg("ok"),                                  // 1: Trivial
+            tool_use_msg_with_id("shell", "tu-1"),                // 2: Medium
+            tool_result_msg_with_id("tu-1", "ok"),                // 3: Low
+            user_msg("decision: critical requirement here"),      // 4: Critical + recency
+            assistant_msg("Understood, I will follow that rule"), // 5: Medium + recency
+        ];
+
+        let pruned = prune_history(&history, 3);
+
+        // The tool pair should be dropped together or kept together
+        let has_tool_use = pruned
+            .kept_messages
+            .iter()
+            .any(|m| !extract_tool_use_ids(m).is_empty());
+        let has_tool_result = pruned
+            .kept_messages
+            .iter()
+            .any(|m| !extract_tool_result_ids(m).is_empty());
+
+        // Either both present or both absent
+        assert_eq!(
+            has_tool_use, has_tool_result,
+            "Tool use and tool result must be kept/dropped together"
+        );
+    }
+
+    // -- remove_orphaned_tool_results tests -----------------------------------
+
+    #[test]
+    fn remove_orphaned_tool_results_removes_orphans() {
+        let mut messages = vec![
+            user_msg("Hello"),
+            // This tool_result has no matching tool_use — orphaned
+            tool_result_msg_with_id("tu-missing", "some output"),
+            assistant_msg("Done"),
+        ];
+
+        remove_orphaned_tool_results(&mut messages);
+        assert_eq!(messages.len(), 2); // orphan removed
+                                       // Verify the remaining messages are correct
+        assert!(matches!(messages[0].role, Role::User));
+        assert!(matches!(messages[1].role, Role::Assistant));
+    }
+
+    #[test]
+    fn remove_orphaned_tool_results_keeps_matched() {
+        let mut messages = vec![
+            user_msg("Run something"),
+            tool_use_msg_with_id("shell", "tu-1"),
+            tool_result_msg_with_id("tu-1", "output"),
+            assistant_msg("Done"),
+        ];
+
+        remove_orphaned_tool_results(&mut messages);
+        assert_eq!(messages.len(), 4); // nothing removed
+    }
+
+    #[test]
+    fn remove_orphaned_tool_results_empty() {
+        let mut messages: Vec<ChatMessage> = vec![];
+        remove_orphaned_tool_results(&mut messages);
+        assert!(messages.is_empty());
+    }
+
+    #[test]
+    fn remove_orphaned_tool_results_mixed_matched_and_orphaned() {
+        let mut messages = vec![
+            tool_use_msg_with_id("shell", "tu-1"),
+            tool_result_msg_with_id("tu-1", "good output"), // matched
+            tool_result_msg_with_id("tu-gone", "bad output"), // orphaned
+            assistant_msg("Done"),
+        ];
+
+        remove_orphaned_tool_results(&mut messages);
+        assert_eq!(messages.len(), 3); // orphan removed
     }
 }

@@ -165,6 +165,7 @@ impl AgentRuntime {
         session: &mut SessionContext,
         interrupt: Option<Arc<AtomicBool>>,
         pending: Option<PendingMessages>,
+        reply_tx: Option<tokio::sync::mpsc::UnboundedSender<OutboundMessage>>,
     ) -> Result<(OutboundMessage, TurnUsage), SkyclawError> {
         info!(
             channel = %msg.channel,
@@ -283,29 +284,8 @@ impl AgentRuntime {
             user_text = format!("{}\n\n{}", notice, user_text);
         }
 
-        // ── V2 Complexity Classification ─────────────────────────────
-        let execution_profile = if self.v2_optimizations {
-            let router = ModelRouter::new(ModelRouterConfig::default());
-            let complexity = router.classify_complexity(
-                &session.history,
-                &[], // no tool names known yet
-                &user_text,
-            );
-            let profile = complexity.execution_profile();
-            info!(
-                complexity = ?complexity,
-                prompt_tier = ?profile.prompt_tier,
-                skip_tool_loop = profile.skip_tool_loop,
-                max_iterations = profile.max_iterations,
-                "V2: Task classified"
-            );
-            Some(profile)
-        } else {
-            None
-        };
-
-        // Append the user message to session history
-        // If we have image parts, use Parts content; otherwise plain text.
+        // Append the user message to session history FIRST (before classification,
+        // so chat early-returns have the message in history for persistence).
         if image_parts.is_empty() {
             session.history.push(ChatMessage {
                 role: Role::User,
@@ -321,6 +301,107 @@ impl AgentRuntime {
                 content: MessageContent::Parts(parts),
             });
         }
+
+        // ── V2 LLM Classification ─────────────────────────────────────
+        // Classify the message as "chat" or "order" using a fast LLM call.
+        //   Chat  → return immediately with the LLM's response (1 call total).
+        //   Order → send acknowledgment via reply_tx, then run the agentic pipeline.
+        let execution_profile = if self.v2_optimizations {
+            match crate::llm_classifier::classify_message(
+                self.provider.as_ref(),
+                &self.model,
+                &user_text,
+                &session.history,
+            )
+            .await
+            {
+                Ok((classification, classify_usage)) => {
+                    // Record classification call in per-turn accumulators
+                    let classify_cost = crate::budget::calculate_cost(
+                        classify_usage.input_tokens,
+                        classify_usage.output_tokens,
+                        &self.model_pricing,
+                    );
+                    turn_api_calls = turn_api_calls.saturating_add(1);
+                    turn_input_tokens =
+                        turn_input_tokens.saturating_add(classify_usage.input_tokens);
+                    turn_output_tokens =
+                        turn_output_tokens.saturating_add(classify_usage.output_tokens);
+                    turn_cost_usd += classify_cost;
+                    self.budget.record_usage(
+                        classify_usage.input_tokens,
+                        classify_usage.output_tokens,
+                        classify_cost,
+                    );
+
+                    info!(
+                        category = ?classification.category,
+                        difficulty = ?classification.difficulty,
+                        "V2: LLM classified message"
+                    );
+
+                    match classification.category {
+                        crate::llm_classifier::MessageCategory::Chat => {
+                            // ── Chat: return immediately ─────────────────
+                            // Push assistant reply to history for persistence.
+                            session.history.push(ChatMessage {
+                                role: Role::Assistant,
+                                content: MessageContent::Text(classification.chat_text.clone()),
+                            });
+
+                            return Ok((
+                                OutboundMessage {
+                                    chat_id: msg.chat_id.clone(),
+                                    text: classification.chat_text,
+                                    reply_to: Some(msg.id.clone()),
+                                    parse_mode: None,
+                                },
+                                TurnUsage {
+                                    api_calls: turn_api_calls,
+                                    input_tokens: turn_input_tokens,
+                                    output_tokens: turn_output_tokens,
+                                    tools_used: 0,
+                                    total_cost_usd: turn_cost_usd,
+                                    provider: self.provider.name().to_string(),
+                                    model: self.model.clone(),
+                                },
+                            ));
+                        }
+                        crate::llm_classifier::MessageCategory::Order => {
+                            // ── Order: send ack, then continue pipeline ──
+                            if let Some(ref tx) = reply_tx {
+                                let ack = OutboundMessage {
+                                    chat_id: msg.chat_id.clone(),
+                                    text: classification.chat_text,
+                                    reply_to: Some(msg.id.clone()),
+                                    parse_mode: None,
+                                };
+                                if let Err(e) = tx.send(ack) {
+                                    warn!(error = %e, "Failed to send early reply for order");
+                                }
+                            }
+                            Some(classification.difficulty.execution_profile())
+                        }
+                    }
+                }
+                Err(e) => {
+                    // Fallback to rule-based classification
+                    warn!(error = %e, "LLM classification failed, using rule-based fallback");
+                    let router = ModelRouter::new(ModelRouterConfig::default());
+                    let complexity = router.classify_complexity(&session.history, &[], &user_text);
+                    let profile = complexity.execution_profile();
+                    info!(
+                        complexity = ?complexity,
+                        prompt_tier = ?profile.prompt_tier,
+                        max_iterations = profile.max_iterations,
+                        "V2: Rule-based fallback classification"
+                    );
+                    Some(profile)
+                }
+            }
+        } else {
+            None
+        };
 
         // ── DONE Definition Engine ─────────────────────────────────
         // Detect compound tasks and inject a DONE criteria prompt so
@@ -392,10 +473,7 @@ impl AgentRuntime {
                 break;
             }
 
-            let effective_max_rounds = execution_profile
-                .as_ref()
-                .map_or(self.max_tool_rounds, |p| p.max_iterations as usize);
-            if rounds > effective_max_rounds {
+            if rounds > self.max_tool_rounds {
                 warn!(
                     "Exceeded maximum tool rounds ({}), forcing text reply",
                     self.max_tool_rounds

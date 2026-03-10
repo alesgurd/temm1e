@@ -9,6 +9,7 @@ pub mod done_criteria;
 pub mod executor;
 pub mod history_pruning;
 pub mod learning;
+pub mod llm_classifier;
 pub mod model_router;
 pub mod output_compression;
 pub mod proactive;

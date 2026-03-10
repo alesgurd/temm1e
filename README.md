@@ -10,14 +10,14 @@
   <a href="https://github.com/nagisanzenin/skyclaw/stargazers"><img src="https://img.shields.io/github/stars/nagisanzenin/skyclaw?style=flat&color=gold&logo=github" alt="GitHub Stars"></a>
   <a href="https://discord.gg/3ux2c5xz"><img src="https://img.shields.io/badge/Discord-Join%20Community-5865F2?logo=discord&logoColor=white" alt="Discord"></a>
   <img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="MIT License">
-  <img src="https://img.shields.io/badge/version-2.0.0-blue.svg" alt="Version">
-  <img src="https://img.shields.io/badge/tests-1141-green.svg" alt="1141 tests">
+  <img src="https://img.shields.io/badge/version-2.0.1-blue.svg" alt="Version">
+  <img src="https://img.shields.io/badge/tests-1217-green.svg" alt="1217 tests">
   <img src="https://img.shields.io/badge/providers-7-red.svg" alt="7 providers">
 </p>
 
 # SkyClaw
 
-Hyper-performance Rust agent runtime with extreme resilience and continuous self-learning. Deploys once, stays up forever. Learns from every task, remembers across sessions, self-heals through failures. **v2.0: smart complexity classification — 12% cheaper on compound tasks, 14% fewer tool calls, zero quality loss.** 46K lines, 1141 tests, zero warnings, zero panic paths.
+Hyper-performance Rust agent runtime with extreme resilience and continuous self-learning. Deploys once, stays up forever. Learns from every task, remembers across sessions, self-heals through failures. **v2.0: LLM-powered chat/order classification — chat messages answered in 1 call, orders get instant acknowledgment while the pipeline works.** 46K lines, 1217 tests, zero warnings, zero panic paths.
 
 ## What It Does
 
@@ -29,27 +29,30 @@ No web dashboards. No config files to edit. Deploy, paste your API key in Telegr
 
 SkyClaw's intelligence layer — 20 modules driving an autonomous execution cycle, now with **smart complexity classification** that understands what kind of task you're asking before it starts working.
 
-### v2.0: Complexity-Aware Execution
+### v2.1: LLM-Powered Chat/Order Classification
 
-Every inbound message is classified **instantly** (rule-based, zero LLM cost) before entering the agent loop:
+Every inbound message is classified by a **single fast LLM call** that serves dual purpose — classify AND respond:
 
 ```
 Message arrives
     ↓
-[CLASSIFY] ─→ Trivial ──→ skip tool loop, minimal prompt ──→ respond
-             → Simple  ──→ basic prompt, 2 iterations max ──→ respond
-             → Standard ─→ full prompt, 5 iterations ──────→ agent loop
-             → Complex ──→ full prompt, 10 iterations ─────→ agent loop
+[LLM CLASSIFY] ─→ Chat  ──→ return response immediately (1 call total)
+                → Order ──→ send acknowledgment instantly
+                             ↓
+                         [PIPELINE] ─→ runs until done
+                                       (budget + time are the only limits)
 ```
 
-| What you say | Classification | What V2 does differently |
-|-------------|---------------|--------------------------|
-| "Thanks" / "Ok" | Trivial | Skips entire tool pipeline |
-| "Capital of France?" | Simple | Lighter prompt, capped iterations |
-| "Create these files and verify" | Standard | Full pipeline, optimized rounds |
-| "Debug this codebase" | Complex | Extended iterations, full context |
+| What you say | Category | What happens |
+|-------------|----------|-------------|
+| "What's the capital of France?" | Chat | LLM answers directly. Done. 1 call. |
+| "Thanks!" / "Ok" | Chat | LLM responds naturally. Done. 1 call. |
+| "Open YouTube and search for news" | Order (standard) | User sees instant ack, pipeline runs. |
+| "Find a poem, translate it, export as DOCX" | Order (complex) | User sees instant ack, full pipeline with max context. |
 
-**Benchmarked result (GPT-5.2, 20 turns):** 12% cheaper on compound tasks, 14% fewer tool calls, 36% cheaper on best-case multi-step tasks. Zero quality regression. [Full benchmark](docs/AGENTIC_CORE_V2_BENCHMARK_TOOLS.md) | [Release notes](docs/AGENTIC_CORE_V2_RELEASE.md)
+**Key insight:** Chat messages never enter the tool loop — zero wasted tokens. Order messages get an instant acknowledgment so the user isn't staring at silence while the pipeline works. Multilingual — the LLM classifies and responds in the user's language. No artificial iteration caps — budget and time limits are the natural guardrails.
+
+Fallback: if the LLM classify call fails (network error, parse failure), rule-based classification kicks in automatically.
 
 ### Agent Loop
 
@@ -84,11 +87,11 @@ ORDER ─→ THINK ─→ ACTION ─→ VERIFY ─┐
 | Metric | Value |
 |--------|-------|
 | **Lines of Rust** | 46,827 across 104 source files |
-| **Tests** | 1,141 passing, 0 failures |
+| **Tests** | 1,217 passing, 0 failures |
 | **Clippy warnings** | 0 (CI gate: `-D warnings`) |
 | **Workspace crates** | 13 + 1 binary |
 | **Implemented features** | 52 across 10 phases |
-| **AGENTIC CORE modules** | 20 + 4 v2 modules |
+| **AGENTIC CORE modules** | 20 + 5 v2 modules |
 | **Traits (core)** | 14 shared trait definitions |
 | **AI providers** | 7 (Anthropic, OpenAI, Gemini, Grok, OpenRouter, Z.ai, MiniMax) |
 | **Messaging channels** | 4 ([Telegram](docs/channels/telegram.md), [Discord](docs/channels/discord.md), [Slack](docs/channels/slack.md), [CLI](docs/channels/cli.md)) |
@@ -255,17 +258,43 @@ Config lives at `~/.skyclaw/credentials.toml` — SkyClaw reads and edits this f
 skyclaw start              Start the gateway daemon
 skyclaw chat               Interactive CLI chat
 skyclaw status             Show running state
+skyclaw update             Check for updates and rebuild
 skyclaw config validate    Validate configuration
 skyclaw config show        Print resolved config
 skyclaw version            Show version info
 ```
+
+### `skyclaw update`
+
+Checks for new commits, pulls the latest code, and rebuilds the release binary in one command:
+
+```bash
+$ skyclaw update
+SkyClaw Update
+Current version: 2.0.1
+
+Fetching latest changes...
+3 new commit(s):
+
+  a1b2c3d feat: LLM-based message classification
+  d4e5f6g fix: orphaned tool_result in history pruning
+  h7i8j9k docs: update CLI reference
+
+Pulling from origin/main...
+Building release binary... (this may take a few minutes)
+
+Update complete!
+Restart with: skyclaw start
+```
+
+Handles dirty working trees automatically (stash → pull → build → pop). If you're not in a git repo, it tells you.
 
 ## Development
 
 ```bash
 cargo check --workspace                                    # Quick compilation check
 cargo build --workspace                                    # Debug build
-cargo test --workspace                                     # Run all 1141 tests
+cargo test --workspace                                     # Run all 1217 tests
 cargo clippy --workspace --all-targets --all-features -- -D warnings  # Lint (0 warnings)
 cargo fmt --all                                            # Format
 cargo build --release                                      # Release build
@@ -280,6 +309,8 @@ cargo build --release                                      # Release build
 ## Release Timeline
 
 ```
+2026-03-11  v2.0.1  ●━━━ LLM chat/order classification — single LLM call classifies AND responds (chat = 1 call, order = instant ack + pipeline), abolished artificial tool iteration caps (budget + time are the guardrails), skyclaw update command, 1217 tests
+                    │
 2026-03-10  v2.0.0  ●━━━ AGENTIC CORE V2 — smart complexity classification (Trivial/Simple/Standard/Complex), prompt stratification (4 tiers), complexity-aware tool loop, execution profiles, structured failure types, 12% cheaper on compound tasks, 14% fewer tool calls, zero quality regression. Benchmarked: 20-turn A/B on GPT-5.2, 100% classification accuracy, 100% reliability. 1141 tests
                     │
 2026-03-10  v1.7.0  ●━━━ Vision fallback & /model command — graceful image stripping for text-only models, /model mechanical switching with instant reload, model validation, hot-reload auto-revert, proxy provider flexibility, 1141 tests
