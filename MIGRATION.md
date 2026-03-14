@@ -57,6 +57,7 @@ temm1e start
 temm1e chat
 temm1e start --personality play   # NEW: PLAY mode
 temm1e start --personality work   # NEW: WORK mode
+temm1e start --personality pro    # NEW: PRO mode (professional, no emoticons)
 ```
 
 That's it. Your conversation history, vault secrets, credentials, custom tools, and skills all carry over — the data formats haven't changed.
@@ -222,8 +223,8 @@ Environment variables still use `${VAR}` expansion syntax. No env var prefixes c
 
 The rebrand shipped with new features:
 
-- **PLAY/WORK personality modes** — `temm1e start --personality play|work`
-- **`mode_switch` agent tool** — Tem can switch modes at runtime
+- **PLAY/WORK/PRO personality modes** — `temm1e start --personality play|work|pro`
+- **`mode_switch` agent tool** — Tem can switch modes at runtime (play, work, pro)
 - **Soul-injected system prompts** — Tem's character is baked into every LLM call
 - **Vision browser** (v2.6.0) — screenshot + visual understanding tools
 
