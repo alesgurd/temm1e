@@ -343,6 +343,19 @@ KEY RULES:\n\
 - When asked to visit a website, open a page, or interact with a web app, \
   USE THE BROWSER TOOL. Do not refuse or explain why you can't — just do it.\n\
 - After finishing browser work, call browser with action 'close' to shut it down.\n\
+- When using browser observe/accessibility_tree, share key findings with the user. \
+Show them what elements you found (e.g., 'I can see a search box, login button, \
+and 3 article links'). Don't just silently process the tree — the user wants to \
+know what you see.\n\
+- SECURITY: NEVER ask users to send passwords, credentials, or login info in chat. \
+  When you encounter a login page and need to authenticate, use the browser tool \
+  with action 'authenticate' and the service name. If no credentials are stored, \
+  tell the user to use the /login command to securely set up their session. \
+  Example: 'I need to log into Facebook. Use /login facebook https://facebook.com/login \
+  to set up your session securely — I will never see your password.'\n\
+- IMPORTANT: Before browsing any site that needs login, ALWAYS try browser action \
+  'restore_web_session' with the service name FIRST. The user may have already saved \
+  a session via /login. Only if restore_web_session fails, ask them to use /login.\n\
 - Reply in the same language the user writes in.\n\
 - Be concise. No emoji unless the user uses them.\n\
 - NEVER give up on a task by explaining limitations. You have a multi-round \
@@ -1356,10 +1369,29 @@ async fn main() -> Result<()> {
             let pending_raw_keys: Arc<Mutex<HashSet<String>>> =
                 Arc::new(Mutex::new(HashSet::new()));
 
+            // ── Active login sessions (OTK Prowl — per-chat interactive browser sessions) ────
+            #[cfg(feature = "browser")]
+            let login_sessions: Arc<Mutex<HashMap<String, temm1e_tools::browser_session::InteractiveBrowseSession>>> =
+                Arc::new(Mutex::new(HashMap::new()));
+
             // ── Usage store (shares same SQLite DB as memory) ────
             let usage_store: Arc<dyn temm1e_core::UsageStore> =
                 Arc::new(temm1e_memory::SqliteUsageStore::new(&memory_url).await?);
             tracing::info!("Usage store initialized");
+
+            // ── Vault (encrypted credential store) ───────────────
+            let vault: Option<Arc<dyn temm1e_core::Vault>> = match temm1e_vault::LocalVault::new()
+                .await
+            {
+                Ok(v) => {
+                    tracing::info!("Vault initialized");
+                    Some(Arc::new(v) as Arc<dyn temm1e_core::Vault>)
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "Vault initialization failed — browser authenticate disabled");
+                    None
+                }
+            };
 
             // ── Tools (with secret-censoring channel wrapper) ───
             let censored_channel: Option<Arc<dyn Channel>> = primary_channel
@@ -1385,6 +1417,7 @@ async fn main() -> Result<()> {
                 } else {
                     Some(shared_mode.clone())
                 },
+                vault.clone(),
             );
             tracing::info!(count = tools.len(), "Tools initialized");
 
@@ -1705,6 +1738,8 @@ async fn main() -> Result<()> {
                 let pending_clone = pending_messages.clone();
                 let setup_tokens_clone = setup_tokens.clone();
                 let pending_raw_keys_clone = pending_raw_keys.clone();
+                #[cfg(feature = "browser")]
+                let login_sessions_clone = login_sessions.clone();
                 let usage_store_clone = usage_store.clone();
                 let hive_clone = hive_instance.clone();
 
@@ -1913,6 +1948,10 @@ async fn main() -> Result<()> {
                             let shared_memory_strategy = shared_memory_strategy_for_worker;
                             let setup_tokens_worker = setup_tokens_clone.clone();
                             let pending_raw_keys_worker = pending_raw_keys_clone.clone();
+                            #[cfg(feature = "browser")]
+                            let login_sessions_worker = login_sessions_clone.clone();
+                            #[cfg(feature = "browser")]
+                            let vault_for_login = vault.clone();
                             let usage_store_worker = usage_store_clone.clone();
                             let hive_worker = hive_clone.clone();
                             let worker_chat_id = chat_id.clone();
@@ -2552,6 +2591,182 @@ Just type a message to chat with the AI agent.",
                                         send_with_retry(&*sender, reply).await;
                                         is_heartbeat_clone.store(false, Ordering::Relaxed);
                                         return;
+                                    }
+
+                                    // /login <service> <url> — OTK Prowl interactive login session
+                                    #[cfg(feature = "browser")]
+                                    if cmd_lower.starts_with("/login ") || cmd_lower == "/login" {
+                                        let args = msg_text_cmd.trim().strip_prefix("/login").unwrap_or("").trim();
+                                        if args.is_empty() {
+                                            let reply = temm1e_core::types::message::OutboundMessage {
+                                                chat_id: msg.chat_id.clone(),
+                                                text: "Usage: /login <service>\nExamples:\n  /login facebook\n  /login github\n  /login https://mysite.com/login\n  /login myapp https://myapp.com/auth\n\n100+ services supported: facebook, google, github, slack, discord, amazon, netflix, spotify...".to_string(),
+                                                reply_to: Some(msg.id.clone()),
+                                                parse_mode: None,
+                                            };
+                                            send_with_retry(&*sender, reply).await;
+                                            is_heartbeat_clone.store(false, Ordering::Relaxed);
+                                            return;
+                                        }
+
+                                        // Resolve service name → login URL using registry
+                                        let (service_name, login_url) = match temm1e_tools::prowl_blueprints::login_registry::resolve_login_args(args) {
+                                            Some((s, u)) => (s, u),
+                                            None => {
+                                                let reply = temm1e_core::types::message::OutboundMessage {
+                                                    chat_id: msg.chat_id.clone(),
+                                                    text: "Could not parse login target. Try: /login facebook".to_string(),
+                                                    reply_to: Some(msg.id.clone()),
+                                                    parse_mode: None,
+                                                };
+                                                send_with_retry(&*sender, reply).await;
+                                                is_heartbeat_clone.store(false, Ordering::Relaxed);
+                                                return;
+                                            }
+                                        };
+
+                                        tracing::info!(
+                                            service = %service_name,
+                                            url = %login_url,
+                                            chat_id = %msg.chat_id,
+                                            "OTK Prowl login session starting"
+                                        );
+
+                                        // Launch browser and create session via convenience API
+                                        match temm1e_tools::browser_session::InteractiveBrowseSession::launch(
+                                            &service_name, &login_url
+                                        ).await {
+                                            Ok(mut session) => {
+                                                // Capture first annotated screenshot
+                                                match session.capture_annotated().await {
+                                                    Ok((_png, description)) => {
+                                                        let text = format!(
+                                                            "🔐 Login session for '{}'\n\n{}",
+                                                            service_name, description
+                                                        );
+                                                        let reply = temm1e_core::types::message::OutboundMessage {
+                                                            chat_id: msg.chat_id.clone(),
+                                                            text,
+                                                            reply_to: Some(msg.id.clone()),
+                                                            parse_mode: None,
+                                                        };
+                                                        send_with_retry(&*sender, reply).await;
+
+                                                        // Store session for this chat
+                                                        login_sessions_worker.lock().await.insert(
+                                                            msg.chat_id.clone(), session
+                                                        );
+                                                    }
+                                                    Err(e) => {
+                                                        let reply = temm1e_core::types::message::OutboundMessage {
+                                                            chat_id: msg.chat_id.clone(),
+                                                            text: format!("Failed to scan page: {}", e),
+                                                            reply_to: Some(msg.id.clone()),
+                                                            parse_mode: None,
+                                                        };
+                                                        send_with_retry(&*sender, reply).await;
+                                                    }
+                                                }
+                                            }
+                                            Err(e) => {
+                                                let reply = temm1e_core::types::message::OutboundMessage {
+                                                    chat_id: msg.chat_id.clone(),
+                                                    text: format!("Login session failed: {}", e),
+                                                    reply_to: Some(msg.id.clone()),
+                                                    parse_mode: None,
+                                                };
+                                                send_with_retry(&*sender, reply).await;
+                                            }
+                                        }
+
+                                        is_heartbeat_clone.store(false, Ordering::Relaxed);
+                                        return;
+                                    }
+
+                                    // ── Active login session interceptor ──────
+                                    // If this chat has an active login session, route messages there
+                                    // instead of the agent
+                                    #[cfg(feature = "browser")]
+                                    {
+                                        let has_session = login_sessions_worker.lock().await.contains_key(&msg.chat_id);
+                                        if has_session {
+                                            let input = msg_text_cmd.trim();
+                                            let mut sessions = login_sessions_worker.lock().await;
+                                            if let Some(session) = sessions.get_mut(&msg.chat_id) {
+                                                match session.handle_input(input).await {
+                                                    Ok(temm1e_tools::browser_session::SessionAction::Continue) => {
+                                                        // Re-capture and send updated page
+                                                        match session.capture_annotated().await {
+                                                            Ok((_png, description)) => {
+                                                                let reply = temm1e_core::types::message::OutboundMessage {
+                                                                    chat_id: msg.chat_id.clone(),
+                                                                    text: format!("✅ Done\n\n{}", description),
+                                                                    reply_to: Some(msg.id.clone()),
+                                                                    parse_mode: None,
+                                                                };
+                                                                send_with_retry(&*sender, reply).await;
+                                                            }
+                                                            Err(e) => {
+                                                                let reply = temm1e_core::types::message::OutboundMessage {
+                                                                    chat_id: msg.chat_id.clone(),
+                                                                    text: format!("Page scan error: {}", e),
+                                                                    reply_to: Some(msg.id.clone()),
+                                                                    parse_mode: None,
+                                                                };
+                                                                send_with_retry(&*sender, reply).await;
+                                                            }
+                                                        }
+                                                    }
+                                                    Ok(temm1e_tools::browser_session::SessionAction::Done) => {
+                                                        // Capture session to vault
+                                                        if let Some(ref v) = vault_for_login {
+                                                            match session.capture_session(v.as_ref()).await {
+                                                                Ok(()) => {
+                                                                    let svc = session.service().to_string();
+                                                                    sessions.remove(&msg.chat_id);
+                                                                    let reply = temm1e_core::types::message::OutboundMessage {
+                                                                        chat_id: msg.chat_id.clone(),
+                                                                        text: format!("🔒 Session for '{}' saved securely! I can now browse {} for you.", svc, svc),
+                                                                        reply_to: Some(msg.id.clone()),
+                                                                        parse_mode: None,
+                                                                    };
+                                                                    send_with_retry(&*sender, reply).await;
+                                                                }
+                                                                Err(e) => {
+                                                                    let reply = temm1e_core::types::message::OutboundMessage {
+                                                                        chat_id: msg.chat_id.clone(),
+                                                                        text: format!("Session save failed: {}", e),
+                                                                        reply_to: Some(msg.id.clone()),
+                                                                        parse_mode: None,
+                                                                    };
+                                                                    send_with_retry(&*sender, reply).await;
+                                                                }
+                                                            }
+                                                        } else {
+                                                            sessions.remove(&msg.chat_id);
+                                                            let reply = temm1e_core::types::message::OutboundMessage {
+                                                                chat_id: msg.chat_id.clone(),
+                                                                text: "Login complete but vault not available — session not saved.".to_string(),
+                                                                reply_to: Some(msg.id.clone()),
+                                                                parse_mode: None,
+                                                            };
+                                                            send_with_retry(&*sender, reply).await;
+                                                        }
+                                                    }
+                                                    Err(e) => {
+                                                        let reply = temm1e_core::types::message::OutboundMessage {
+                                                            chat_id: msg.chat_id.clone(),
+                                                            text: format!("⚠️ {}", e),
+                                                            reply_to: Some(msg.id.clone()),
+                                                            parse_mode: None,
+                                                        };
+                                                        send_with_retry(&*sender, reply).await;
+                                                    }
+                                                }
+                                            }
+                                            is_heartbeat_clone.store(false, Ordering::Relaxed);
+                                            return;
+                                        }
                                     }
 
                                     // /reset — factory reset from messaging (admin only)
@@ -3737,6 +3952,20 @@ Just type a message to chat with the AI agent.",
             let usage_store: Arc<dyn temm1e_core::UsageStore> =
                 Arc::new(temm1e_memory::SqliteUsageStore::new(&memory_url).await?);
 
+            // ── Vault (encrypted credential store) ───────────────
+            let vault: Option<Arc<dyn temm1e_core::Vault>> = match temm1e_vault::LocalVault::new()
+                .await
+            {
+                Ok(v) => {
+                    tracing::info!("Vault initialized (CLI)");
+                    Some(Arc::new(v) as Arc<dyn temm1e_core::Vault>)
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "Vault initialization failed — browser authenticate disabled");
+                    None
+                }
+            };
+
             // ── Tools ──────────────────────────────────────────
             let pending_messages: temm1e_tools::PendingMessages =
                 Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
@@ -3758,6 +3987,7 @@ Just type a message to chat with the AI agent.",
                 Some(Arc::new(setup_tokens.clone()) as Arc<dyn temm1e_core::SetupLinkGenerator>),
                 Some(usage_store.clone()),
                 Some(shared_mode.clone()),
+                vault.clone(),
             );
 
             // ── Custom script tools (user/agent-authored) ──────
@@ -4326,6 +4556,56 @@ Just type a message to chat with the AI agent.",
                 if cmd_lower == "/restart" {
                     println!("\n/restart is only available in server mode (temm1e start).");
                     println!("In CLI mode, just exit and re-run: temm1e chat\n");
+                    eprint!("temm1e> ");
+                    continue;
+                }
+
+                // /login <service> <url> — interactive OTK browser login session
+                #[cfg(feature = "browser")]
+                if cmd_lower.starts_with("/login ") {
+                    let login_args = msg_text.trim()["/login".len()..].trim();
+                    let parts: Vec<&str> = login_args.splitn(2, ' ').collect();
+                    if parts.len() < 2 || parts[1].trim().is_empty() {
+                        println!(
+                            "\nUsage: /login <service> <url>\n\n\
+                             Start an interactive browser login session.\n\
+                             You'll see numbered interactive elements — type a number to click,\n\
+                             type text to fill a focused field, or type 'done' to finish.\n\n\
+                             Example: /login github https://github.com/login\n"
+                        );
+                    } else {
+                        let service = parts[0];
+                        let url = parts[1].trim();
+                        match &vault {
+                            None => {
+                                println!(
+                                    "\nVault not available — cannot store session credentials.\n"
+                                );
+                            }
+                            Some(vault_ref) => {
+                                println!(
+                                    "\nStarting interactive login for '{}' at {}\n\
+                                     Launching browser...\n",
+                                    service, url
+                                );
+                                // Launch browser and create session
+                                match temm1e_tools::browser_session_login(
+                                    service,
+                                    url,
+                                    vault_ref.as_ref(),
+                                )
+                                .await
+                                {
+                                    Ok(summary) => {
+                                        println!("\n{}\n", summary);
+                                    }
+                                    Err(e) => {
+                                        println!("\nLogin session failed: {}\n", e);
+                                    }
+                                }
+                            }
+                        }
+                    }
                     eprint!("temm1e> ");
                     continue;
                 }

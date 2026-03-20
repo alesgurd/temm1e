@@ -12,11 +12,19 @@
 //! - Session persistence via CDP cookie save/restore
 //! - Configurable idle timeout for long-running authenticated sessions
 
-use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
+use std::collections::hash_map::DefaultHasher;
+use std::collections::HashMap;
+use std::fmt::Write as _;
+use std::hash::{Hash, Hasher};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, Ordering};
 use std::sync::Arc;
+
+use crate::browser_observation::{self, ObservationTier};
+use crate::credential_scrub;
 
 use async_trait::async_trait;
 use chromiumoxide::browser::{Browser, BrowserConfig};
+use chromiumoxide::cdp::browser_protocol::accessibility::AxNode;
 use chromiumoxide::cdp::browser_protocol::input::{
     DispatchMouseEventParams, DispatchMouseEventType, MouseButton,
 };
@@ -29,9 +37,10 @@ use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use temm1e_core::types::error::Temm1eError;
 use temm1e_core::{
-    PathAccess, Tool, ToolContext, ToolDeclarations, ToolInput, ToolOutput, ToolOutputImage,
+    PathAccess, Tool, ToolContext, ToolDeclarations, ToolInput, ToolOutput, ToolOutputImage, Vault,
 };
 use tokio::sync::Mutex;
+use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 /// Default idle timeout (seconds). Overridden by `ToolsConfig.browser_timeout_secs`.
 const DEFAULT_IDLE_TIMEOUT_SECS: i64 = 300;
@@ -128,6 +137,15 @@ struct SessionCookie {
     same_site: Option<String>,
 }
 
+/// Web credential for automated login — zeroed from memory on drop.
+#[derive(Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
+pub struct WebCredential {
+    pub username: String,
+    pub password: String,
+    #[zeroize(skip)]
+    pub service_url: String,
+}
+
 /// Manages a shared browser instance with one active page.
 /// Always runs headless with stealth anti-detection patches.
 pub struct BrowserTool {
@@ -145,6 +163,15 @@ pub struct BrowserTool {
     cdp_handle: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
     /// Last screenshot image data — consumed by runtime for vision injection.
     last_image: Arc<std::sync::Mutex<Option<ToolOutputImage>>>,
+    /// Hash of the last observed accessibility tree — for incremental observation.
+    /// If the tree hasn't changed since last observation, we return a short message
+    /// instead of repeating the full tree.
+    last_tree_hash: Arc<std::sync::Mutex<Option<u64>>>,
+    /// Optional vault for credential retrieval.
+    vault: Option<Arc<dyn Vault>>,
+    /// PID of the Chrome main process — used to kill child processes on shutdown.
+    /// Set to 0 when no browser is running.
+    chrome_pid: Arc<AtomicU32>,
 }
 
 impl Default for BrowserTool {
@@ -168,6 +195,7 @@ impl BrowserTool {
         let idle_timeout = timeout_secs as i64;
         let cdp_handle: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>> =
             Arc::new(Mutex::new(None));
+        let chrome_pid = Arc::new(AtomicU32::new(0));
 
         // Spawn idle auto-close watchdog — store handle for cleanup on drop.
         let watchdog_handle = {
@@ -176,6 +204,7 @@ impl BrowserTool {
             let last_used = last_used.clone();
             let shutdown = shutdown.clone();
             let cdp_handle = cdp_handle.clone();
+            let chrome_pid = chrome_pid.clone();
             tokio::spawn(async move {
                 loop {
                     tokio::time::sleep(std::time::Duration::from_secs(30)).await;
@@ -192,6 +221,7 @@ impl BrowserTool {
                         let mut p = page.lock().await;
                         if b.is_some() {
                             tracing::info!("Browser idle for {}s — auto-closing", now - lu);
+                            let pid = chrome_pid.swap(0, Ordering::Relaxed);
                             *p = None;
                             *b = None;
                             // Abort the CDP handler so it doesn't linger.
@@ -199,6 +229,10 @@ impl BrowserTool {
                                 handle.abort();
                             }
                             last_used.store(0, Ordering::Relaxed);
+                            // Kill any orphaned Chrome child processes.
+                            if pid > 0 {
+                                kill_chrome_children(pid);
+                            }
                         }
                     }
                 }
@@ -214,7 +248,16 @@ impl BrowserTool {
             watchdog_handle: Mutex::new(Some(watchdog_handle)),
             cdp_handle,
             last_image: Arc::new(std::sync::Mutex::new(None)),
+            last_tree_hash: Arc::new(std::sync::Mutex::new(None)),
+            vault: None,
+            chrome_pid,
         }
+    }
+
+    /// Attach a vault for credential retrieval.
+    pub fn with_vault(mut self, vault: Arc<dyn Vault>) -> Self {
+        self.vault = Some(vault);
+        self
     }
 
     /// Signal the watchdog to stop and abort background task handles.
@@ -231,6 +274,7 @@ impl BrowserTool {
         let mut browser_guard = self.browser.lock().await;
         let mut page_guard = self.page.lock().await;
         if browser_guard.is_some() {
+            let pid = self.chrome_pid.swap(0, Ordering::Relaxed);
             *page_guard = None;
             *browser_guard = None;
             // Abort the CDP handler task so it doesn't linger after the browser exits.
@@ -238,11 +282,24 @@ impl BrowserTool {
                 handle.abort();
             }
             self.last_used.store(0, Ordering::Relaxed);
+            // Kill any orphaned Chrome child processes (renderer, GPU, utility).
+            if pid > 0 {
+                kill_chrome_children(pid);
+            }
             tracing::info!("Browser closed by agent");
             "Browser closed.".to_string()
         } else {
             "No browser was running.".to_string()
         }
+    }
+
+    /// Graceful async shutdown — closes the browser and kills all Chrome processes.
+    ///
+    /// Prefer this over relying on `Drop` during application shutdown, since `Drop`
+    /// cannot run async code and must use best-effort synchronous cleanup.
+    pub async fn shutdown(&self) {
+        self.shutdown.store(true, Ordering::Relaxed);
+        self.close_browser().await;
     }
 
     /// Lazily launch the browser on first use, or relaunch if dead.
@@ -257,22 +314,45 @@ impl BrowserTool {
                 Ok(_) => return Ok(page.clone()),
                 Err(_) => {
                     tracing::warn!("Browser connection lost — relaunching");
+                    let old_pid = self.chrome_pid.swap(0, Ordering::Relaxed);
                     *page_guard = None;
                     *browser_guard = None;
                     // Abort the stale CDP handler from the dead browser.
                     if let Some(handle) = self.cdp_handle.lock().await.take() {
                         handle.abort();
                     }
+                    // Clean up any lingering child processes from the dead browser.
+                    if old_pid > 0 {
+                        kill_chrome_children(old_pid);
+                    }
                 }
             }
         }
 
         // ── Stealth launch flags ─────────────────────────────────────
-        let config = BrowserConfig::builder()
+        let mut builder = BrowserConfig::builder()
             .arg("--headless=new")
             .arg("--disable-gpu")
             .arg("--no-sandbox")
-            .arg("--disable-dev-shm-usage")
+            .arg("--disable-dev-shm-usage");
+
+        // DEV/TEST ONLY: use a clean profile with no cookies when TEMM1E_CLEAN_BROWSER=1
+        // Production users keep their session persistence via the default Chrome profile
+        if std::env::var("TEMM1E_CLEAN_BROWSER").unwrap_or_default() == "1" {
+            let temp_profile = std::env::temp_dir()
+                .join(format!("temm1e-chrome-clean-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&temp_profile); // ensure truly fresh
+            let _ = std::fs::create_dir_all(&temp_profile);
+            builder = builder
+                .user_data_dir(&temp_profile)
+                .arg("--incognito");
+            tracing::info!(
+                profile = %temp_profile.display(),
+                "Browser using clean profile (TEMM1E_CLEAN_BROWSER=1)"
+            );
+        }
+
+        let config = builder
             // Anti-detection flags
             .arg("--disable-blink-features=AutomationControlled")
             .arg("--disable-infobars")
@@ -287,12 +367,19 @@ impl BrowserTool {
             .build()
             .map_err(|e| Temm1eError::Tool(format!("Failed to build browser config: {}", e)))?;
 
-        let (browser, mut handler) = Browser::launch(config).await.map_err(|e| {
+        let (mut browser, mut handler) = Browser::launch(config).await.map_err(|e| {
             Temm1eError::Tool(format!(
                 "Failed to launch browser. Is Chrome/Chromium installed? Error: {}",
                 e
             ))
         })?;
+
+        // Capture the Chrome process PID for child-process cleanup on shutdown.
+        if let Some(child) = browser.get_mut_child() {
+            let pid = child.as_mut_inner().id();
+            self.chrome_pid.store(pid, Ordering::Relaxed);
+            tracing::debug!(pid = pid, "Chrome process PID captured");
+        }
 
         // Spawn the CDP handler — this MUST keep running for the browser to work.
         // Store the handle so we can abort it when the browser is closed.
@@ -487,6 +574,13 @@ impl BrowserTool {
     }
 }
 
+/// Public wrapper around `format_ax_tree` for use by `browser_session` module.
+pub fn format_ax_tree_pub(
+    nodes: &[chromiumoxide::cdp::browser_protocol::accessibility::AxNode],
+) -> String {
+    format_ax_tree(nodes)
+}
+
 /// Return the sessions directory path: `~/.temm1e/sessions/`.
 fn sessions_dir() -> Result<std::path::PathBuf, Temm1eError> {
     dirs::home_dir()
@@ -513,9 +607,425 @@ fn sanitize_session_name(name: &str) -> String {
     }
 }
 
+// ── Accessibility tree roles ────────────────────────────────────────
+
+/// Interactive roles worth surfacing to the agent (buttons, inputs, links, etc.).
+const INTERACTIVE_ROLES: &[&str] = &[
+    "button",
+    "link",
+    "textbox",
+    "combobox",
+    "checkbox",
+    "radio",
+    "slider",
+    "spinbutton",
+    "switch",
+    "tab",
+    "menuitem",
+    "option",
+    "searchbox",
+    "textarea",
+];
+
+/// Semantic/structural roles that provide meaningful page context.
+const SEMANTIC_ROLES: &[&str] = &[
+    "heading",
+    "navigation",
+    "main",
+    "form",
+    "list",
+    "listitem",
+    "table",
+    "row",
+    "cell",
+    "img",
+    "alert",
+    "dialog",
+];
+
+/// AX property names we include in the formatted output.
+const AX_KEY_PROPERTIES: &[&str] = &[
+    "focused", "disabled", "expanded", "checked", "required", "level",
+];
+
+/// Format a flat accessibility tree from CDP `AxNode` list into a numbered,
+/// indented, filtered text representation suitable for LLM consumption.
+///
+/// Only interactive and semantic roles are included; generic containers (div,
+/// span, group, paragraph, StaticText) are silently traversed but not emitted.
+/// Each emitted node is assigned a sequential index for stable cross-turn
+/// references.
+fn format_ax_tree(nodes: &[chromiumoxide::cdp::browser_protocol::accessibility::AxNode]) -> String {
+    use chromiumoxide::cdp::browser_protocol::accessibility::AxNode;
+
+    if nodes.is_empty() {
+        return "(empty accessibility tree)".to_string();
+    }
+    // Build a lookup: node_id → &AxNode
+    let node_map: HashMap<&str, &AxNode> = nodes.iter().map(|n| (n.node_id.as_ref(), n)).collect();
+
+    // Build parent → ordered children map
+    let mut children_map: HashMap<&str, Vec<&str>> = HashMap::new();
+    for node in nodes {
+        if let Some(ref child_ids) = node.child_ids {
+            let ids: Vec<&str> = child_ids.iter().map(|id| id.as_ref()).collect();
+            children_map.insert(node.node_id.as_ref(), ids);
+        }
+    }
+
+    let mut output = String::new();
+    let mut index: usize = 1;
+
+    // Recursive walker. Returns true if this subtree produced any output.
+    fn walk(
+        node_id: &str,
+        depth: usize,
+        index: &mut usize,
+        output: &mut String,
+        node_map: &HashMap<&str, &chromiumoxide::cdp::browser_protocol::accessibility::AxNode>,
+        children_map: &HashMap<&str, Vec<&str>>,
+    ) {
+        let Some(node) = node_map.get(node_id) else {
+            return;
+        };
+
+        // Skip ignored nodes entirely
+        if node.ignored {
+            return;
+        }
+
+        let role = node
+            .role
+            .as_ref()
+            .and_then(|v| v.value.as_ref())
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+
+        let name = node
+            .name
+            .as_ref()
+            .and_then(|v| v.value.as_ref())
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+
+        let is_interactive = INTERACTIVE_ROLES.contains(&role);
+        let is_semantic = SEMANTIC_ROLES.contains(&role);
+
+        if is_interactive || is_semantic {
+            let indent = "  ".repeat(depth);
+            let _ = write!(output, "{indent}[{idx}] {role}", idx = *index);
+
+            // Include name if non-empty
+            if !name.is_empty() {
+                let _ = write!(output, " \"{}\"", name);
+            }
+
+            // Include value for input elements
+            if let Some(ref val) = node.value {
+                if let Some(ref v) = val.value {
+                    let val_str = match v {
+                        serde_json::Value::String(s) => s.clone(),
+                        other => other.to_string(),
+                    };
+                    if !val_str.is_empty() {
+                        let _ = write!(output, " value=\"{}\"", val_str);
+                    }
+                }
+            }
+
+            // Include key properties (focused, disabled, expanded, checked, required, level)
+            if let Some(ref props) = node.properties {
+                for prop in props {
+                    let prop_name = prop.name.as_ref();
+                    if AX_KEY_PROPERTIES.contains(&prop_name) {
+                        if let Some(ref v) = prop.value.value {
+                            let val_str = match v {
+                                serde_json::Value::String(s) => s.clone(),
+                                serde_json::Value::Bool(b) => b.to_string(),
+                                serde_json::Value::Number(n) => n.to_string(),
+                                other => other.to_string(),
+                            };
+                            let _ = write!(output, " {}={}", prop_name, val_str);
+                        }
+                    }
+                }
+            }
+
+            let _ = writeln!(output);
+            *index += 1;
+
+            // Recurse into children at deeper indent
+            if let Some(child_ids) = children_map.get(node_id) {
+                for child_id in child_ids {
+                    walk(child_id, depth + 1, index, output, node_map, children_map);
+                }
+            }
+        } else {
+            // Not a role we emit — still recurse into children at SAME depth
+            // (transparent passthrough for generic containers)
+            if let Some(child_ids) = children_map.get(node_id) {
+                for child_id in child_ids {
+                    walk(child_id, depth, index, output, node_map, children_map);
+                }
+            }
+        }
+    }
+
+    // The first node in the array is the root
+    let root_id = nodes[0].node_id.as_ref();
+    walk(
+        root_id,
+        0,
+        &mut index,
+        &mut output,
+        &node_map,
+        &children_map,
+    );
+
+    if output.is_empty() {
+        "(no interactive or semantic elements found)".to_string()
+    } else {
+        output
+    }
+}
+
+// ── Login form detection ─────────────────────────────────────────
+
+fn detect_login_form(nodes: &[AxNode]) -> Option<(String, String, String)> {
+    let mut username_id = None;
+    let mut password_id = None;
+    let mut submit_id = None;
+
+    for node in nodes {
+        if node.ignored {
+            continue;
+        }
+        let role = node
+            .role
+            .as_ref()
+            .and_then(|v| v.value.as_ref())
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let name = node
+            .name
+            .as_ref()
+            .and_then(|v| v.value.as_ref())
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_lowercase();
+
+        if role == "textbox" {
+            let is_protected = node
+                .properties
+                .as_ref()
+                .map(|props| {
+                    props.iter().any(|p| {
+                        p.name.as_ref() == "protected"
+                            && p.value.value.as_ref().and_then(|v| v.as_bool()) == Some(true)
+                    })
+                })
+                .unwrap_or(false);
+
+            if is_protected {
+                password_id = Some(node.node_id.as_ref().to_string());
+            } else if username_id.is_none()
+                && (name.contains("email")
+                    || name.contains("user")
+                    || name.contains("login")
+                    || name.contains("phone")
+                    || name.contains("account")
+                    || name.is_empty())
+            {
+                username_id = Some(node.node_id.as_ref().to_string());
+            }
+        }
+
+        if (role == "button" || role == "link")
+            && submit_id.is_none()
+            && (name.contains("sign in")
+                || name.contains("log in")
+                || name.contains("login")
+                || name.contains("submit")
+                || name.contains("continue")
+                || name.contains("next"))
+        {
+            submit_id = Some(node.node_id.as_ref().to_string());
+        }
+    }
+
+    match (username_id, password_id, submit_id) {
+        (Some(u), Some(p), Some(s)) => Some((u, p, s)),
+        _ => None,
+    }
+}
+
+fn find_ax_node_by_id<'a>(nodes: &'a [AxNode], id: &str) -> Option<&'a AxNode> {
+    nodes.iter().find(|n| n.node_id.as_ref() == id)
+}
+
+async fn cdp_insert_text(page: &Page, text: &str) -> Result<(), Temm1eError> {
+    use chromiumoxide::cdp::browser_protocol::input::InsertTextParams;
+    page.execute(InsertTextParams::new(text))
+        .await
+        .map_err(|e| Temm1eError::Tool(format!("insertText failed: {}", e)))?;
+    Ok(())
+}
+
+async fn cdp_focus_backend_node(
+    page: &Page,
+    backend_node_id: chromiumoxide::cdp::browser_protocol::dom::BackendNodeId,
+) -> Result<(), Temm1eError> {
+    use chromiumoxide::cdp::browser_protocol::dom::FocusParams;
+    page.execute(
+        FocusParams::builder()
+            .backend_node_id(backend_node_id)
+            .build(),
+    )
+    .await
+    .map_err(|e| Temm1eError::Tool(format!("DOM.focus failed: {}", e)))?;
+    Ok(())
+}
+
+async fn cdp_clear_field(
+    page: &Page,
+    backend_node_id: chromiumoxide::cdp::browser_protocol::dom::BackendNodeId,
+) -> Result<(), Temm1eError> {
+    use chromiumoxide::cdp::browser_protocol::dom::ResolveNodeParams;
+    use chromiumoxide::cdp::js_protocol::runtime::CallFunctionOnParams;
+    let resolved = page
+        .execute(
+            ResolveNodeParams::builder()
+                .backend_node_id(backend_node_id)
+                .build(),
+        )
+        .await
+        .map_err(|e| Temm1eError::Tool(format!("DOM.resolveNode failed: {}", e)))?;
+    let object_id = resolved
+        .result
+        .object
+        .object_id
+        .ok_or_else(|| Temm1eError::Tool("Resolved node has no remote object ID".into()))?;
+    let js_fn = r#"function() { this.value = ''; this.dispatchEvent(new Event('input', {bubbles:true})); }"#;
+    let mut call_params = CallFunctionOnParams::new(js_fn);
+    call_params.object_id = Some(object_id);
+    page.execute(call_params)
+        .await
+        .map_err(|e| Temm1eError::Tool(format!("callFunctionOn (clear) failed: {}", e)))?;
+    Ok(())
+}
+
+async fn cdp_click_backend_node(
+    page: &Page,
+    backend_node_id: chromiumoxide::cdp::browser_protocol::dom::BackendNodeId,
+) -> Result<(), Temm1eError> {
+    use chromiumoxide::cdp::browser_protocol::dom::ResolveNodeParams;
+    use chromiumoxide::cdp::js_protocol::runtime::CallFunctionOnParams;
+    let resolved = page
+        .execute(
+            ResolveNodeParams::builder()
+                .backend_node_id(backend_node_id)
+                .build(),
+        )
+        .await
+        .map_err(|e| Temm1eError::Tool(format!("DOM.resolveNode failed: {}", e)))?;
+    let object_id = resolved
+        .result
+        .object
+        .object_id
+        .ok_or_else(|| Temm1eError::Tool("Resolved node has no remote object ID".into()))?;
+    let mut call_params = CallFunctionOnParams::new("function() { this.click(); }");
+    call_params.object_id = Some(object_id);
+    page.execute(call_params)
+        .await
+        .map_err(|e| Temm1eError::Tool(format!("callFunctionOn (click) failed: {}", e)))?;
+    Ok(())
+}
+
+/// Kill orphaned Chrome child processes (renderer, GPU, utility) by parent PID.
+///
+/// When Chrome's main process is killed via SIGKILL (from `kill_on_drop`), its child
+/// processes (renderer, GPU process, utility process) are NOT automatically terminated
+/// on macOS/Linux because SIGKILL cannot be caught and Chrome has no opportunity to
+/// clean up its children. This function finds and kills those orphaned children.
+///
+/// On Windows, `taskkill /T /F /PID` kills the entire process tree.
+///
+/// This function is intentionally synchronous so it can be called from `Drop`.
+pub fn kill_chrome_children(parent_pid: u32) {
+    #[cfg(unix)]
+    {
+        // Find child processes via `pgrep -P <pid>` and kill them individually.
+        // This handles renderer, GPU process, utility, and any other Chrome children.
+        if let Ok(output) = std::process::Command::new("pgrep")
+            .arg("-P")
+            .arg(parent_pid.to_string())
+            .output()
+        {
+            if output.status.success() {
+                let pids = String::from_utf8_lossy(&output.stdout);
+                let mut killed = 0u32;
+                for line in pids.lines() {
+                    if let Ok(child_pid) = line.trim().parse::<u32>() {
+                        // Use `kill -9 <pid>` to send SIGKILL to each child.
+                        let _ = std::process::Command::new("kill")
+                            .args(["-9", &child_pid.to_string()])
+                            .output();
+                        killed += 1;
+                    }
+                }
+                if killed > 0 {
+                    tracing::debug!(
+                        parent_pid = parent_pid,
+                        children_killed = killed,
+                        "Killed orphaned Chrome child processes"
+                    );
+                }
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    {
+        // On Windows, `taskkill /T /F /PID <pid>` kills the process tree.
+        let _ = std::process::Command::new("taskkill")
+            .args(["/T", "/F", "/PID", &parent_pid.to_string()])
+            .output();
+        tracing::debug!(pid = parent_pid, "Killed Chrome process tree (Windows)");
+    }
+}
+
 impl Drop for BrowserTool {
     fn drop(&mut self) {
         self.signal_shutdown();
+
+        // Best-effort synchronous cleanup: take the browser and CDP handle out of
+        // their mutexes so their Drop impls fire immediately. This triggers
+        // chromiumoxide's kill_on_drop on the main Chrome process.
+        //
+        // try_lock() is used because we cannot .await in Drop. If the lock is held
+        // (e.g., mid-operation), we skip — the Arc refcount will eventually reach
+        // zero and Drop will fire later, but we lose the guarantee of immediate
+        // cleanup.
+        if let Ok(mut guard) = self.browser.try_lock() {
+            let _ = guard.take(); // Browser::drop -> kill_on_drop fires here
+        }
+        if let Ok(mut guard) = self.page.try_lock() {
+            let _ = guard.take();
+        }
+        if let Ok(mut guard) = self.cdp_handle.try_lock() {
+            if let Some(handle) = guard.take() {
+                handle.abort();
+            }
+        }
+
+        // Kill orphaned Chrome child processes (renderer, GPU, utility).
+        // The main Chrome process is killed by kill_on_drop above, but its
+        // children (spawned as separate processes) survive on macOS/Linux
+        // because SIGKILL does not propagate to children.
+        let pid = self.chrome_pid.swap(0, Ordering::Relaxed);
+        if pid > 0 {
+            kill_chrome_children(pid);
+        }
     }
 }
 
@@ -540,9 +1050,23 @@ impl Tool for BrowserTool {
          - get_html: Get the raw HTML of the page or an element\n\
          - save_session: Save all cookies to a named session file\n\
          - restore_session: Restore cookies from a previously saved session\n\
+         - accessibility_tree (alias: observe_tree): Extract the page accessibility tree — \
+           returns a filtered, numbered list of interactive and semantic elements \
+           (buttons, links, inputs, headings, etc.) with their properties\n\
+         - observe: Smart layered observation — auto-selects between tree only (Tier 1), \
+           tree + DOM as Markdown (Tier 2), or tree + screenshot (Tier 3) based on page \
+           complexity. Supports incremental observation (skips if page unchanged). \
+           Optional hint and retry parameters.\n\
+         - authenticate: Log into a website using vault credentials. Requires service parameter.\n\
+         - restore_web_session: Restore a previously captured web session (cookies + storage) \
+           from the vault. Requires service parameter. Checks if session is still alive.\n\
          - close: Close the browser when done (auto-closes after idle timeout)\n\n\
          Vision workflow: screenshot → analyze image → click_at coordinates → repeat.\n\
          This bypasses Shadow DOM, anti-bot CSS tricks, and hidden elements.\n\n\
+         Structured observation: accessibility_tree → read numbered elements → \
+         interact by selector or click_at. Lighter than screenshots for form-heavy pages.\n\n\
+         Layered observation: observe → auto-selects optimal data level → \
+         avoids wasting tokens on screenshots when tree is sufficient.\n\n\
          The browser runs in stealth mode with anti-detection patches applied."
     }
 
@@ -552,7 +1076,7 @@ impl Tool for BrowserTool {
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["navigate", "click", "click_at", "type", "screenshot", "get_text", "evaluate", "get_html", "save_session", "restore_session", "close"],
+                    "enum": ["navigate", "click", "click_at", "type", "screenshot", "get_text", "evaluate", "get_html", "save_session", "restore_session", "accessibility_tree", "observe_tree", "observe", "authenticate", "restore_web_session", "close"],
                     "description": "The browser action to perform"
                 },
                 "url": {
@@ -586,6 +1110,18 @@ impl Tool for BrowserTool {
                 "session_name": {
                     "type": "string",
                     "description": "Name for the session (for 'save_session'/'restore_session' actions, e.g. 'facebook', 'github')"
+                },
+                "hint": {
+                    "type": "string",
+                    "description": "Optional hint about what to look for (for 'observe' action, e.g. 'table', 'form', 'captcha', 'visual')"
+                },
+                "service": {
+                    "type": "string",
+                    "description": "Service name for credential lookup (for authenticate action)"
+                },
+                "retry": {
+                    "type": "boolean",
+                    "description": "Set true if previous action failed — triggers visual verification via screenshot (for 'observe' action)"
                 }
             },
             "required": ["action"]
@@ -638,9 +1174,26 @@ impl Tool for BrowserTool {
                     })?;
 
                 tracing::info!(url = %url, "Browser navigating (stealth)");
-                page.goto(url)
-                    .await
-                    .map_err(|e| Temm1eError::Tool(format!("Navigation failed: {}", e)))?;
+                // 60s timeout for heavy sites like Facebook
+                match tokio::time::timeout(
+                    std::time::Duration::from_secs(60),
+                    page.goto(url)
+                ).await {
+                    Ok(Ok(_)) => {}
+                    Ok(Err(e)) => {
+                        // Navigation error but page may have partially loaded — continue
+                        tracing::warn!(error = %e, "Navigation error (continuing)");
+                    }
+                    Err(_) => {
+                        // Timeout — page may still be usable
+                        tracing::warn!(url = %url, "Navigation timeout after 60s (continuing)");
+                    }
+                }
+
+                // Reset observation tree hash — new page means new content
+                if let Ok(mut hash) = self.last_tree_hash.lock() {
+                    *hash = None;
+                }
 
                 // Wait for page to settle
                 tokio::time::sleep(std::time::Duration::from_secs(2)).await;
@@ -1047,10 +1600,371 @@ impl Tool for BrowserTool {
                 })
             }
 
+            "accessibility_tree" | "observe_tree" => {
+                tracing::debug!("Browser extracting accessibility tree via JS");
+
+                // Use JavaScript to extract accessibility-relevant info from the DOM
+                // because chromiumoxide 0.7 can't deserialize Accessibility.getFullAXTree
+                // CDP responses (WS deserialization error on newer Chrome versions).
+                let js = r#"(() => {
+                    const results = [];
+                    let idx = 1;
+                    const walk = (el, depth) => {
+                        if (!el || el.nodeType !== 1) return;
+                        const tag = el.tagName.toLowerCase();
+                        const role = el.getAttribute('role') || '';
+                        const ariaLabel = el.getAttribute('aria-label') || '';
+                        const type = el.getAttribute('type') || '';
+                        const name = el.getAttribute('name') || '';
+                        const text = (el.textContent || '').trim().substring(0, 80);
+                        const isInteractive = ['a','button','input','select','textarea'].includes(tag)
+                            || ['button','link','textbox','combobox','checkbox','radio','tab','menuitem','searchbox','slider','switch'].includes(role);
+                        const isSemantic = ['h1','h2','h3','h4','h5','h6','nav','main','form','table','img','ul','ol'].includes(tag)
+                            || ['heading','navigation','main','form','table','list','listitem','img','alert','dialog'].includes(role);
+                        if (isInteractive || isSemantic) {
+                            let label = ariaLabel || el.title || '';
+                            if (!label && tag === 'a') label = text;
+                            if (!label && tag === 'img') label = el.alt || el.src?.split('/').pop() || '';
+                            if (!label && ['input','textarea','select'].includes(tag)) {
+                                const id = el.id;
+                                if (id) { const lbl = document.querySelector('label[for="'+id+'"]'); if (lbl) label = lbl.textContent.trim(); }
+                            }
+                            if (!label && ['h1','h2','h3','h4','h5','h6'].includes(tag)) label = text;
+                            if (!label && tag === 'button') label = text;
+                            const effectiveRole = role || tag;
+                            let entry = '  '.repeat(depth) + '[' + idx + '] ' + effectiveRole;
+                            if (label) entry += ' "' + label.substring(0,60).replace(/"/g,'\\"') + '"';
+                            if (tag === 'a') {
+                                const href = el.getAttribute('href') || '';
+                                if (href && !href.startsWith('javascript:')) {
+                                    entry += ' href="' + href.substring(0, 80) + '"';
+                                }
+                            }
+                            if (tag === 'input' && type) entry += ' type=' + type;
+                            if (el.value && ['input','textarea','select'].includes(tag)) entry += ' value="' + el.value.substring(0,30) + '"';
+                            if (el.disabled) entry += ' disabled=true';
+                            if (el.checked) entry += ' checked=true';
+                            if (el.required) entry += ' required=true';
+                            if (tag.match(/^h[1-6]$/)) entry += ' level=' + tag[1];
+                            results.push(entry);
+                            idx++;
+                        }
+                        for (const child of el.children) walk(child, isInteractive || isSemantic ? depth+1 : depth);
+                    };
+                    const root = document.querySelector('main') || document.querySelector('[role="main"]') || document.body;
+                    walk(root, 0);
+                    return results.length > 0 ? results.join('\n') : '[No interactive or semantic elements found on this page]';
+                })()"#;
+
+                let result = page
+                    .evaluate(js)
+                    .await
+                    .map_err(|e| {
+                        Temm1eError::Tool(format!("Accessibility tree extraction failed: {}", e))
+                    })?;
+
+                let formatted = result
+                    .into_value::<String>()
+                    .unwrap_or_else(|_| "[Could not parse accessibility tree]".to_string());
+
+                tracing::debug!(
+                    output_len = formatted.len(),
+                    "Accessibility tree extracted via JS"
+                );
+
+                Ok(ToolOutput {
+                    content: formatted,
+                    is_error: false,
+                })
+            }
+
+            "observe" => {
+                let hint = input.arguments.get("hint").and_then(|v| v.as_str());
+                let retry = input
+                    .arguments
+                    .get("retry")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+
+                tracing::debug!(hint = ?hint, retry = retry, "Browser observe — layered observation");
+
+                // Get accessibility tree via JS (CDP typed API has deserialization issues)
+                let ax_js = r#"(() => {
+                    const results = [];
+                    let idx = 1;
+                    const walk = (el, depth) => {
+                        if (!el || el.nodeType !== 1) return;
+                        const tag = el.tagName.toLowerCase();
+                        const role = el.getAttribute('role') || '';
+                        const ariaLabel = el.getAttribute('aria-label') || '';
+                        const type = el.getAttribute('type') || '';
+                        const text = (el.textContent || '').trim().substring(0, 80);
+                        const isInteractive = ['a','button','input','select','textarea'].includes(tag)
+                            || ['button','link','textbox','combobox','checkbox','radio','tab','menuitem','searchbox','slider','switch'].includes(role);
+                        const isSemantic = ['h1','h2','h3','h4','h5','h6','nav','main','form','table','img','ul','ol'].includes(tag)
+                            || ['heading','navigation','main','form','table','list','listitem','img','alert','dialog'].includes(role);
+                        if (isInteractive || isSemantic) {
+                            let label = ariaLabel || el.title || '';
+                            if (!label && tag === 'a') label = text;
+                            if (!label && tag === 'img') label = el.alt || '';
+                            if (!label && ['input','textarea','select'].includes(tag)) {
+                                const id = el.id;
+                                if (id) { const lbl = document.querySelector('label[for="'+id+'"]'); if (lbl) label = lbl.textContent.trim(); }
+                            }
+                            if (!label && ['h1','h2','h3','h4','h5','h6'].includes(tag)) label = text;
+                            if (!label && tag === 'button') label = text;
+                            const effectiveRole = role || tag;
+                            let entry = '  '.repeat(depth) + '[' + idx + '] ' + effectiveRole;
+                            if (label) entry += ' "' + label.substring(0,60).replace(/"/g,'\\"') + '"';
+                            if (tag === 'a') {
+                                const href = el.getAttribute('href') || '';
+                                if (href && !href.startsWith('javascript:')) {
+                                    entry += ' href="' + href.substring(0, 80) + '"';
+                                }
+                            }
+                            if (tag === 'input' && type) entry += ' type=' + type;
+                            if (el.value && ['input','textarea','select'].includes(tag)) entry += ' value="' + el.value.substring(0,30) + '"';
+                            if (el.disabled) entry += ' disabled=true';
+                            if (el.checked) entry += ' checked=true';
+                            if (el.required) entry += ' required=true';
+                            if (tag.match(/^h[1-6]$/)) entry += ' level=' + tag[1];
+                            results.push(entry);
+                            idx++;
+                        }
+                        for (const child of el.children) walk(child, isInteractive || isSemantic ? depth+1 : depth);
+                    };
+                    const root = document.querySelector('main') || document.querySelector('[role="main"]') || document.body;
+                    walk(root, 0);
+                    return results.length > 0 ? results.join('\n') : '[No interactive or semantic elements found]';
+                })()"#;
+
+                let tree_text = page
+                    .evaluate(ax_js)
+                    .await
+                    .map_err(|e| Temm1eError::Tool(format!("Observe: tree extraction failed: {}", e)))?
+                    .into_value::<String>()
+                    .unwrap_or_else(|_| "[Could not extract page structure]".to_string());
+
+                // Incremental observation — hash the tree and compare with last
+                let mut hasher = DefaultHasher::new();
+                tree_text.hash(&mut hasher);
+                let current_hash = hasher.finish();
+
+                if let Ok(mut last_hash) = self.last_tree_hash.lock() {
+                    if *last_hash == Some(current_hash) {
+                        tracing::debug!("Observe: page unchanged since last observation");
+                        return Ok(ToolOutput {
+                            content: "[Page unchanged since last observation]".to_string(),
+                            is_error: false,
+                        });
+                    }
+                    *last_hash = Some(current_hash);
+                }
+
+                // Analyze and select tier
+                let meta = browser_observation::analyze_tree(&tree_text);
+                let tier = browser_observation::select_tier(&meta, hint, retry);
+
+                tracing::debug!(
+                    tier = ?tier,
+                    total_interactive = meta.total_interactive,
+                    unlabeled = meta.unlabeled_interactive,
+                    has_table = meta.has_table,
+                    has_form = meta.has_form,
+                    "Observe: tier selected"
+                );
+
+                match tier {
+                    ObservationTier::Tree => Ok(ToolOutput {
+                        content: tree_text,
+                        is_error: false,
+                    }),
+                    ObservationTier::TreeWithDom { selector } => {
+                        let js = format!(
+                            "(() => {{ const el = document.querySelector('{}'); \
+                             return el ? el.outerHTML : 'not found'; }})()",
+                            selector.replace('\'', "\\'")
+                        );
+                        let dom_html: String = page
+                            .evaluate(js)
+                            .await
+                            .map(|r| r.into_value::<String>().unwrap_or_default())
+                            .unwrap_or_default();
+
+                        let markdown = htmd::convert(&dom_html).unwrap_or(dom_html);
+
+                        // Truncate markdown to 4000 chars (safe boundary via char_indices)
+                        let md_truncated =
+                            browser_observation::truncate_safe(&markdown, 4000);
+
+                        Ok(ToolOutput {
+                            content: format!(
+                                "{}\n\n--- DOM Detail ({}) ---\n{}",
+                                tree_text, selector, md_truncated
+                            ),
+                            is_error: false,
+                        })
+                    }
+                    ObservationTier::TreeWithScreenshot { selector: sel } => {
+                        use chromiumoxide::cdp::browser_protocol::page::CaptureScreenshotFormat;
+
+                        let png_data = if let Some(ref css_sel) = sel {
+                            let el = page.find_element(css_sel).await.map_err(|e| {
+                                Temm1eError::Tool(format!(
+                                    "Observe: element '{}' not found: {}",
+                                    css_sel, e
+                                ))
+                            })?;
+                            el.screenshot(CaptureScreenshotFormat::Png).await.map_err(
+                                |e| {
+                                    Temm1eError::Tool(format!(
+                                        "Observe: element screenshot failed: {}",
+                                        e
+                                    ))
+                                },
+                            )?
+                        } else {
+                            page.screenshot(
+                                chromiumoxide::page::ScreenshotParams::builder()
+                                    .format(CaptureScreenshotFormat::Png)
+                                    .build(),
+                            )
+                            .await
+                            .map_err(|e| {
+                                Temm1eError::Tool(format!(
+                                    "Observe: viewport screenshot failed: {}",
+                                    e
+                                ))
+                            })?
+                        };
+
+                        // Store base64 image for vision injection by the runtime.
+                        {
+                            use base64::Engine;
+                            let b64 =
+                                base64::engine::general_purpose::STANDARD.encode(&png_data);
+                            if let Ok(mut img) = self.last_image.lock() {
+                                *img = Some(ToolOutputImage {
+                                    media_type: "image/png".to_string(),
+                                    data: b64,
+                                });
+                            }
+                        }
+
+                        Ok(ToolOutput {
+                            content: format!(
+                                "{}\n\n[Screenshot captured for visual analysis — \
+                                 Tier 3 observation]",
+                                tree_text
+                            ),
+                            is_error: false,
+                        })
+                    }
+                }
+            }
+
+            "authenticate" => {
+                let service = input.arguments.get("service").and_then(|v| v.as_str())
+                    .ok_or_else(|| Temm1eError::Tool("'authenticate' requires 'service' parameter".into()))?;
+
+                tracing::info!(service = %service, "Browser authenticate — credential isolation protocol");
+
+                let vault = self.vault.as_ref()
+                    .ok_or_else(|| Temm1eError::Tool("Vault not available".into()))?;
+                let raw_bytes = vault.get_secret(&format!("web_cred:{}", service)).await?
+                    .ok_or_else(|| Temm1eError::Tool(format!("No credentials for '{}'", service)))?;
+                let zeroizing = Zeroizing::new(raw_bytes);
+                let cred: WebCredential = serde_json::from_slice(&zeroizing)
+                    .map_err(|e| Temm1eError::Tool(format!("Credential parse error: {}", e)))?;
+
+                use chromiumoxide::cdp::browser_protocol::accessibility::GetFullAxTreeParams;
+                let ax_result = page.execute(GetFullAxTreeParams::default()).await
+                    .map_err(|e| Temm1eError::Tool(format!("Auth: ax tree failed: {}", e)))?;
+
+                let (user_id, pass_id, submit_id) = detect_login_form(&ax_result.result.nodes)
+                    .ok_or_else(|| Temm1eError::Tool("Could not detect login form on this page".into()))?;
+
+                tracing::debug!(username_node = %user_id, password_node = %pass_id, submit_node = %submit_id, "Login form detected");
+
+                let user_node = find_ax_node_by_id(&ax_result.result.nodes, &user_id)
+                    .ok_or_else(|| Temm1eError::Tool("Username AX node not found".into()))?;
+                let pass_node = find_ax_node_by_id(&ax_result.result.nodes, &pass_id)
+                    .ok_or_else(|| Temm1eError::Tool("Password AX node not found".into()))?;
+                let submit_node = find_ax_node_by_id(&ax_result.result.nodes, &submit_id)
+                    .ok_or_else(|| Temm1eError::Tool("Submit AX node not found".into()))?;
+
+                let user_backend_id = user_node.backend_dom_node_id
+                    .ok_or_else(|| Temm1eError::Tool("Username AX node has no DOM backing".into()))?;
+                let pass_backend_id = pass_node.backend_dom_node_id
+                    .ok_or_else(|| Temm1eError::Tool("Password AX node has no DOM backing".into()))?;
+                let submit_backend_id = submit_node.backend_dom_node_id
+                    .ok_or_else(|| Temm1eError::Tool("Submit AX node has no DOM backing".into()))?;
+
+                cdp_clear_field(&page, user_backend_id).await?;
+                cdp_focus_backend_node(&page, user_backend_id).await?;
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                cdp_insert_text(&page, &cred.username).await?;
+
+                cdp_clear_field(&page, pass_backend_id).await?;
+                cdp_focus_backend_node(&page, pass_backend_id).await?;
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                cdp_insert_text(&page, &cred.password).await?;
+
+                drop(cred);
+
+                cdp_click_backend_node(&page, submit_backend_id).await?;
+                tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+
+                let post_ax = page.execute(GetFullAxTreeParams::default()).await
+                    .map_err(|e| Temm1eError::Tool(format!("Auth: post-login tree failed: {}", e)))?;
+                let post_tree = format_ax_tree(&post_ax.result.nodes);
+                let scrubbed = credential_scrub::scrub(&post_tree, &[service]);
+
+                tracing::info!(service = %service, "Authentication flow completed");
+
+                Ok(ToolOutput {
+                    content: format!("Authenticated to '{}'. Post-login page:\n{}", service, scrubbed),
+                    is_error: false,
+                })
+            }
+
+            "restore_web_session" => {
+                let service = input.arguments.get("service").and_then(|v| v.as_str())
+                    .ok_or_else(|| Temm1eError::Tool("'restore_web_session' requires 'service' parameter".into()))?;
+
+                tracing::info!(service = %service, "Browser restore_web_session — loading session from vault");
+
+                let vault = self.vault.as_ref()
+                    .ok_or_else(|| Temm1eError::Tool("Vault not available for session restore".into()))?;
+
+                let (tree_text, session_alive) = crate::browser_session::restore_web_session(
+                    &page, vault.as_ref(), service,
+                ).await?;
+
+                if session_alive {
+                    Ok(ToolOutput {
+                        content: format!(
+                            "Session restored for '{}'. Current page:\n{}",
+                            service, tree_text
+                        ),
+                        is_error: false,
+                    })
+                } else {
+                    Ok(ToolOutput {
+                        content: format!(
+                            "Session for '{}' has expired (login prompt detected). Need to re-authenticate.",
+                            service
+                        ),
+                        is_error: true,
+                    })
+                }
+            }
+
             other => Ok(ToolOutput {
                 content: format!(
                     "Unknown action '{}'. Valid actions: navigate, click, click_at, type, screenshot, \
-                     get_text, evaluate, get_html, save_session, restore_session, close",
+                     get_text, evaluate, get_html, save_session, restore_session, \
+                     accessibility_tree, observe_tree, observe, authenticate, restore_web_session, close",
                     other
                 ),
                 is_error: true,
@@ -1810,6 +2724,11 @@ mod tests {
                 "get_html",
                 "save_session",
                 "restore_session",
+                "accessibility_tree",
+                "observe_tree",
+                "observe",
+                "authenticate",
+                "restore_web_session",
                 "close",
             ];
 
@@ -1850,5 +2769,239 @@ mod tests {
             let msg = tool.close_browser().await;
             assert_eq!(msg, "No browser was running.");
         });
+    }
+
+    // ── Accessibility tree formatting tests ─────────────────────────
+
+    mod ax_tree_tests {
+        use super::*;
+        use chromiumoxide::cdp::browser_protocol::accessibility::{
+            AxNode, AxNodeId, AxValue, AxValueType,
+        };
+
+        /// Helper: create a minimal AxNode with role and name.
+        fn make_node(
+            id: &str,
+            role: &str,
+            name: &str,
+            parent_id: Option<&str>,
+            child_ids: Option<Vec<&str>>,
+        ) -> AxNode {
+            let mut node = AxNode::new(AxNodeId::new(id), false);
+            node.role = Some(AxValue {
+                r#type: AxValueType::Role,
+                value: Some(serde_json::Value::String(role.to_string())),
+                related_nodes: None,
+                sources: None,
+            });
+            node.name = Some(AxValue {
+                r#type: AxValueType::String,
+                value: Some(serde_json::Value::String(name.to_string())),
+                related_nodes: None,
+                sources: None,
+            });
+            node.parent_id = parent_id.map(AxNodeId::new);
+            node.child_ids = child_ids.map(|ids| ids.iter().map(|i| AxNodeId::new(*i)).collect());
+            node
+        }
+
+        /// Helper: create an ignored AxNode.
+        fn make_ignored_node(id: &str, parent_id: Option<&str>) -> AxNode {
+            let mut node = AxNode::new(AxNodeId::new(id), true);
+            node.parent_id = parent_id.map(AxNodeId::new);
+            node
+        }
+
+        /// Helper: create a generic container node (not interactive, not semantic).
+        fn make_generic_node(
+            id: &str,
+            parent_id: Option<&str>,
+            child_ids: Option<Vec<&str>>,
+        ) -> AxNode {
+            let mut node = AxNode::new(AxNodeId::new(id), false);
+            node.role = Some(AxValue {
+                r#type: AxValueType::Role,
+                value: Some(serde_json::Value::String("generic".to_string())),
+                related_nodes: None,
+                sources: None,
+            });
+            node.parent_id = parent_id.map(AxNodeId::new);
+            node.child_ids = child_ids.map(|ids| ids.iter().map(|i| AxNodeId::new(*i)).collect());
+            node
+        }
+
+        #[test]
+        fn empty_nodes_returns_placeholder() {
+            let result = format_ax_tree(&[]);
+            assert_eq!(result, "(empty accessibility tree)");
+        }
+
+        #[test]
+        fn single_button_node() {
+            let nodes = vec![make_node("1", "button", "Submit", None, None)];
+            let result = format_ax_tree(&nodes);
+            assert!(result.contains("[1] button \"Submit\""));
+        }
+
+        #[test]
+        fn generic_container_is_skipped_but_children_shown() {
+            let nodes = vec![
+                make_generic_node("root", None, Some(vec!["btn"])),
+                make_node("btn", "button", "Click me", Some("root"), None),
+            ];
+            let result = format_ax_tree(&nodes);
+            assert!(!result.contains("generic"));
+            assert!(result.contains("[1] button \"Click me\""));
+        }
+
+        #[test]
+        fn ignored_node_is_skipped() {
+            let nodes = vec![
+                make_generic_node("root", None, Some(vec!["ign", "btn"])),
+                make_ignored_node("ign", Some("root")),
+                make_node("btn", "button", "Visible", Some("root"), None),
+            ];
+            let result = format_ax_tree(&nodes);
+            assert!(result.contains("[1] button \"Visible\""));
+            assert!(!result.contains("[2]"));
+        }
+
+        #[test]
+        fn nested_hierarchy_indentation() {
+            let nodes = vec![
+                make_node("form1", "form", "Login", None, Some(vec!["input1", "btn1"])),
+                make_node("input1", "textbox", "Username", Some("form1"), None),
+                make_node("btn1", "button", "Log In", Some("form1"), None),
+            ];
+            let result = format_ax_tree(&nodes);
+            assert!(result.contains("[1] form \"Login\""));
+            assert!(result.contains("  [2] textbox \"Username\""));
+            assert!(result.contains("  [3] button \"Log In\""));
+        }
+
+        #[test]
+        fn schema_includes_observe_action() {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(async {
+                let tool = BrowserTool::new();
+                let schema = tool.parameters_schema();
+                let actions = schema["properties"]["action"]["enum"].as_array().unwrap();
+                let action_strs: Vec<&str> = actions.iter().map(|v| v.as_str().unwrap()).collect();
+                assert!(action_strs.contains(&"observe"), "Missing observe action");
+                assert!(
+                    action_strs.contains(&"accessibility_tree"),
+                    "Missing accessibility_tree"
+                );
+                assert!(
+                    action_strs.contains(&"observe_tree"),
+                    "Missing observe_tree"
+                );
+            });
+        }
+
+        #[test]
+        fn schema_includes_hint_and_retry_parameters() {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(async {
+                let tool = BrowserTool::new();
+                let schema = tool.parameters_schema();
+                assert!(
+                    schema["properties"]["hint"].is_object(),
+                    "Missing hint parameter"
+                );
+                assert!(
+                    schema["properties"]["retry"].is_object(),
+                    "Missing retry parameter"
+                );
+            });
+        }
+
+        #[test]
+        fn description_mentions_observe_action() {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(async {
+                let tool = BrowserTool::new();
+                let desc = tool.description();
+                assert!(desc.contains("observe"), "Description missing observe");
+                assert!(desc.contains("Tier 1"), "Description missing Tier 1");
+                assert!(desc.contains("Tier 2"), "Description missing Tier 2");
+                assert!(desc.contains("Tier 3"), "Description missing Tier 3");
+            });
+        }
+
+        #[test]
+        fn last_tree_hash_initializes_to_none() {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(async {
+                let tool = BrowserTool::new();
+                let hash = tool.last_tree_hash.lock().unwrap();
+                assert!(hash.is_none(), "last_tree_hash should start as None");
+            });
+        }
+
+        #[test]
+        fn all_interactive_roles_recognized() {
+            for role in INTERACTIVE_ROLES {
+                let nodes = vec![make_node("1", role, "test", None, None)];
+                let result = format_ax_tree(&nodes);
+                assert!(
+                    result.contains(&format!("[1] {}", role)),
+                    "Role '{}' not recognized",
+                    role
+                );
+            }
+        }
+
+        #[test]
+        fn all_semantic_roles_recognized() {
+            for role in SEMANTIC_ROLES {
+                let nodes = vec![make_node("1", role, "test", None, None)];
+                let result = format_ax_tree(&nodes);
+                assert!(
+                    result.contains(&format!("[1] {}", role)),
+                    "Role '{}' not recognized",
+                    role
+                );
+            }
+        }
+
+        #[test]
+        fn browser_tool_schema_lists_all_actions() {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(async {
+                let tool = BrowserTool::new();
+                let schema = tool.parameters_schema();
+                let actions = schema["properties"]["action"]["enum"].as_array().unwrap();
+                let action_strs: Vec<&str> = actions.iter().map(|v| v.as_str().unwrap()).collect();
+                let expected = vec![
+                    "navigate",
+                    "click",
+                    "click_at",
+                    "type",
+                    "screenshot",
+                    "get_text",
+                    "evaluate",
+                    "get_html",
+                    "save_session",
+                    "restore_session",
+                    "accessibility_tree",
+                    "observe_tree",
+                    "observe",
+                    "authenticate",
+                    "restore_web_session",
+                    "close",
+                ];
+                assert_eq!(
+                    action_strs.len(),
+                    expected.len(),
+                    "Should have exactly {} actions, got: {:?}",
+                    expected.len(),
+                    action_strs
+                );
+                for action in &expected {
+                    assert!(action_strs.contains(action), "Missing action: {}", action);
+                }
+            });
+        }
     }
 }
