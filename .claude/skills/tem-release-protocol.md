@@ -130,19 +130,64 @@ grep -n "tests" SETUP_FOR_PROS.md
 
 ---
 
-### Phase 6: Docker Verification
+### Phase 6: Distribution Parity — install.sh Must Match cargo install
+
+**Principle:** A user who runs `install.sh` should get the same capabilities as `cargo install --git`. Every default feature must ship in the pre-built binary. If it can't (system lib limitation), document the gap clearly.
+
+**Three distribution paths must stay in sync:**
+
+| Path | Config File | What It Builds |
+|------|------------|----------------|
+| `cargo install` (source) | `Cargo.toml` default features | All defaults — user's compiler handles platform deps |
+| `install.sh` (pre-built) | `.github/workflows/release.yml` | Must match defaults. Platform-specific exclusions documented. |
+| Docker | `Dockerfile` FEATURES arg | Must match defaults + any extras (tui, etc.) |
+
+**When adding a new default feature, update ALL THREE:**
+
+1. **Cargo.toml** `[features] default = [...]` — add the feature
+2. **release.yml** — verify macOS builds include it (they use defaults automatically). For Linux musl: if the feature needs system C libraries that can't statically link, explicitly exclude it with `--no-default-features --features list,without,it` and document why.
+3. **Dockerfile** — add to `FEATURES` arg. If the feature needs system dev libs, add `apt-get install` in the builder stage. If it needs runtime libs, add them in the runtime stage.
+
+**Current platform-specific gaps (document in README if any exist):**
+
+| Feature | macOS (install.sh) | Linux musl (install.sh) | Docker | cargo install |
+|---------|-------------------|------------------------|--------|--------------|
+| desktop-control | Yes | **No** (wayland/xcb can't musl-link) | Yes | Yes |
+
+If a gap exists, add a note in README under the feature's build instructions explaining the alternative path (e.g., "Linux binary users: build from source or use Docker").
+
+**Verification checklist for install.sh parity:**
+```bash
+# 1. Check what defaults are
+grep 'default = ' Cargo.toml
+
+# 2. Check what release CI builds for macOS (should be just defaults)
+grep 'cargo build' .github/workflows/release.yml
+
+# 3. Check what Docker builds
+grep 'FEATURES=' Dockerfile
+
+# 4. All three should list the same features (minus platform exclusions)
+```
+
+---
+
+### Phase 7: Docker Verification
 
 **Dockerfile:**
-- If a new default feature was added, add it to the `FEATURES` ARG (line ~12)
-- If a new feature is opt-in only (like `desktop-control`), do NOT add to defaults — document in README instead
+- The `FEATURES` ARG must include ALL default features plus any extras for Docker (e.g., `tui`)
+- If a new default feature needs build-time C libraries: add `apt-get install` in the builder stage
+- If it needs runtime libraries: add them in the runtime stage
 - Verify the Rust version in `FROM rust:X.Y-bookworm` is >= the MSRV
+- Current builder deps: `libwayland-dev libxcb1-dev libxcb-randr0-dev libxcb-shm0-dev libxkbcommon-dev` (for xcap)
+- Current runtime deps: `libxcb1 libxcb-randr0 libxcb-shm0 libxkbcommon0` (for xcap)
 
 **docker-compose.yml:**
 - No changes needed unless environment variables changed
 
 ---
 
-### Phase 7: CI Verification
+### Phase 8: CI Verification
 
 **.github/workflows/ci.yml:**
 - CI runs `cargo clippy --workspace --all-targets --all-features` — this includes ALL feature-gated crates
@@ -156,13 +201,14 @@ grep -n "tests" SETUP_FOR_PROS.md
 |---------|-------|-----|
 | `pkg-config ... was not found` | New crate needs a C library | Add `apt-get install libXXX-dev` to CI |
 | `wayland-sys build failed` | xcap needs Wayland libs on Linux | Already fixed: `libwayland-dev` installed |
-| `failed to link` on musl target | C library not available for musl | Either vendor the lib or exclude the feature from musl builds |
+| `failed to link` on musl target | C library not available for musl | Exclude feature from musl build in release.yml |
 | Clippy passes locally (macOS) but fails in CI (Linux) | Platform-specific deps | Add Linux-specific `apt-get install` |
 
 **.github/workflows/release.yml:**
-- The release build does NOT use `--all-features` — it builds the default feature set
-- `desktop-control` is opt-in and NOT built in release CI (correct — users enable it themselves)
-- If a new **default** feature requires system libs, add them to the release workflow too
+- macOS builds use defaults — automatically includes all default features
+- Linux musl builds: explicitly list features, excluding any that need system C libs that can't musl-link
+- Current Linux musl exclusion: `desktop-control` (wayland/xcb)
+- If a new default feature requires system libs, decide: can it musl-link? Yes → include. No → exclude and document.
 
 ---
 
@@ -236,7 +282,10 @@ git push origin main
 [ ] SETUP_FOR_PROS.md test count updated
 [ ] SETUP_FOR_PROS.md optional features updated
 [ ] docs/dev/getting-started.md feature table updated
-[ ] Dockerfile verified (default features)
+[ ] Distribution parity: Cargo.toml defaults = release.yml = Dockerfile FEATURES
+[ ] install.sh macOS binary includes all default features
+[ ] install.sh Linux binary: gaps documented if any feature excluded from musl
+[ ] Dockerfile FEATURES updated + builder/runtime deps if needed
 [ ] CI workflows verified (new features + system deps)
 [ ] CI system deps updated if new C libraries needed
 [ ] Final compilation gates re-passed
@@ -268,5 +317,6 @@ git push origin main
 
 ## Version History of This Protocol
 
+- **v3 (v3.4.0, 2026-03-28):** Added Phase 6 "Distribution Parity" — install.sh must match cargo install. Three-way sync (Cargo.toml defaults, release.yml, Dockerfile FEATURES). Platform gap documentation for musl builds. Triggered by user question about install.sh missing desktop-control.
 - **v2 (v3.4.0 hotfix, 2026-03-28):** Added CI/CD section with system dependency management, common CI failure table, release.yml vs ci.yml feature scope distinction. Triggered by `wayland-sys` build failure in CI after desktop-control feature was added.
 - **v1 (v3.4.0, 2026-03-28):** Created from Tem Gaze release. Covers: compilation gates, version bump, README (badges, test counts, architecture tree, release timeline, feature instructions), CLAUDE.md, SETUP_FOR_PROS.md, getting-started.md, Dockerfile, CI, merge workflow. Derived from actual mistakes made during the release process.
