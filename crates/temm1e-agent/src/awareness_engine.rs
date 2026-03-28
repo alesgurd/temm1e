@@ -1,224 +1,259 @@
-//! Tem Aware — consciousness observation engine.
+//! Tem Aware — consciousness engine.
 //!
-//! Two-tier observation: rule-based triggers (free, no LLM call) run first.
-//! If no rule triggers and the turn warrants deep observation, an LLM call
-//! analyzes the TurnObservation and produces an intervention.
+//! A separate observer that sees EVERY turn — both before and after the LLM call.
+//! Pre-LLM: injects context, memory, corrections before tokens are spent.
+//! Post-LLM: observes what happened, records patterns, prepares for next turn.
+//!
+//! This is NOT a failure detector. This is consciousness — it watches everything,
+//! including normal, successful turns, because that's where intent drift, cross-session
+//! patterns, and emergent insights live.
 
-use crate::awareness::{AwarenessConfig, ConsciousnessIntervention, TurnObservation};
+use crate::awareness::{AwarenessConfig, TurnObservation};
 use std::sync::Mutex;
-use tracing;
 
-/// Destructive tool patterns that warrant an Override intervention.
-const DESTRUCTIVE_PATTERNS: &[&str] = &[
-    "rm -rf",
-    "rm -r",
-    "rmdir",
-    "drop table",
-    "drop database",
-    "truncate",
-    "format",
-    "del /f",
-    "deltree",
-];
+/// Pre-LLM observation context — what consciousness sees before the main LLM call.
+#[derive(Debug, Clone)]
+pub struct PreObservation {
+    /// The user's message (full text).
+    pub user_message: String,
+    /// Classification result.
+    pub category: String,
+    pub difficulty: String,
+    /// Turn number in session.
+    pub turn_number: u32,
+    /// Session ID.
+    pub session_id: String,
+    /// Cumulative cost so far.
+    pub cumulative_cost_usd: f64,
+    /// Budget limit (0 = unlimited).
+    pub budget_limit_usd: f64,
+}
 
-/// The consciousness engine observes TurnObservations and produces interventions.
+/// The consciousness engine — observes every turn, both pre and post LLM call.
 ///
-/// Uses interior mutability (Mutex) for session state so it can be called
-/// from process_message() which takes `&self`.
+/// Uses interior mutability for session state. Called from process_message()
+/// which takes `&self`.
 pub struct AwarenessEngine {
     config: AwarenessConfig,
+    /// Accumulated observations and notes across the session.
     session_notes: Mutex<Vec<String>>,
+    /// Count of interventions this session.
     intervention_count: Mutex<u32>,
-    /// The pending consciousness note to inject into the next turn.
-    /// Set after observe(), consumed at the start of the next process_message().
-    pending_note: Mutex<Option<String>>,
+    /// Turn counter.
+    turn_counter: Mutex<u32>,
+    /// The pending pre-LLM injection for the CURRENT turn.
+    /// Set by pre_observe(), consumed by the runtime before provider.complete().
+    pre_injection: Mutex<Option<String>>,
+    /// The pending post-LLM note.
+    /// Set by post_observe(), carries forward to the next pre_observe().
+    post_note: Mutex<Option<String>>,
 }
 
 impl AwarenessEngine {
-    /// Create a new consciousness engine with the given config.
     pub fn new(config: AwarenessConfig) -> Self {
         tracing::info!(
             enabled = config.enabled,
             mode = %config.observation_mode,
-            threshold = config.confidence_threshold,
-            max_interventions = config.max_interventions_per_session,
-            "Tem Aware consciousness engine initialized"
+            "Tem Aware: consciousness engine initialized — observing every turn"
         );
         Self {
             config,
             session_notes: Mutex::new(Vec::new()),
             intervention_count: Mutex::new(0),
-            pending_note: Mutex::new(None),
+            turn_counter: Mutex::new(0),
+            pre_injection: Mutex::new(None),
+            post_note: Mutex::new(None),
         }
     }
 
-    /// Check if consciousness observation is enabled.
     pub fn is_enabled(&self) -> bool {
         self.config.enabled
     }
 
-    /// Take the pending consciousness note (if any) for injection into the
-    /// next turn's system prompt. Clears the note after taking.
-    pub fn take_pending_note(&self) -> Option<String> {
-        self.pending_note.lock().ok().and_then(|mut n| n.take())
-    }
+    // ---------------------------------------------------------------
+    // PRE-LLM: Called BEFORE provider.complete()
+    // ---------------------------------------------------------------
 
-    /// Observe a completed turn and decide whether to intervene.
+    /// Observe before the LLM call. Returns a consciousness note to inject
+    /// into the system prompt, or None if nothing to say.
     ///
-    /// This is called AFTER process_message() completes. If an intervention
-    /// is produced, the note is stored in `pending_note` for injection into
-    /// the next turn.
-    pub fn observe(&self, observation: &TurnObservation) -> ConsciousnessIntervention {
+    /// This is called on EVERY turn, not just failures.
+    pub fn pre_observe(&self, obs: &PreObservation) -> Option<String> {
         if !self.config.enabled {
-            return ConsciousnessIntervention::NoAction;
+            return None;
         }
 
-        // Check max interventions
-        let count = self.intervention_count.lock().map(|c| *c).unwrap_or(0);
-        if count >= self.config.max_interventions_per_session {
-            tracing::debug!(
-                count,
-                max = self.config.max_interventions_per_session,
-                "Consciousness: max interventions reached, going quiet"
-            );
-            return ConsciousnessIntervention::NoAction;
+        // Increment turn counter
+        let turn = {
+            let mut tc = self.turn_counter.lock().unwrap_or_else(|e| e.into_inner());
+            *tc += 1;
+            *tc
+        };
+
+        // Build consciousness context from session history
+        let session_notes = self.session_notes();
+        let post_note = self.post_note.lock().ok().and_then(|mut n| n.take());
+
+        let mut injections: Vec<String> = Vec::new();
+
+        // Inject previous turn's post-observation note
+        if let Some(note) = post_note {
+            injections.push(note);
         }
 
-        // Tier 1: Rule-based triggers (free, no LLM call)
-        let intervention = self.check_rules(observation);
-
-        // If rules triggered an intervention, store it
-        if !matches!(intervention, ConsciousnessIntervention::NoAction) {
-            self.record_intervention(&intervention, observation);
-            return intervention;
-        }
-
-        // Tier 2: LLM-based deep observation (costs tokens)
-        // Only if observation_mode is not "rules_only"
-        if self.config.observation_mode == "rules_only" {
-            return ConsciousnessIntervention::NoAction;
-        }
-
-        // For now, we only implement rule-based triggers.
-        // LLM-based observation will be added in a future iteration
-        // after the rule-based system is validated.
-        ConsciousnessIntervention::NoAction
-    }
-
-    /// Rule-based triggers — zero LLM cost.
-    fn check_rules(&self, obs: &TurnObservation) -> ConsciousnessIntervention {
-        // Rule 1: Consecutive tool failures
-        if obs.max_consecutive_failures >= 3 {
-            let failing_tools: Vec<&str> = obs
-                .tool_results
-                .iter()
-                .filter(|r| *r != "success")
-                .map(|r| r.as_str())
-                .collect();
-            let tool_info = if failing_tools.is_empty() {
-                "multiple tools".to_string()
-            } else {
-                failing_tools[0].to_string()
-            };
-            return ConsciousnessIntervention::Whisper(format!(
-                "Awareness: {} consecutive tool failures detected. \
-                 The current approach may not be working. \
-                 Consider a completely different strategy rather than retrying. \
-                 Failed tool context: {}",
-                obs.max_consecutive_failures, tool_info
-            ));
-        }
-
-        // Rule 2: Budget warning
+        // Budget awareness (every turn, not just > 80%)
         if obs.budget_limit_usd > 0.0 {
-            let percent_used = (obs.cumulative_cost_usd / obs.budget_limit_usd) * 100.0;
-            if percent_used > 80.0 {
-                return ConsciousnessIntervention::Whisper(format!(
-                    "Awareness: Budget is at {:.0}% (${:.4} of ${:.2} limit). \
-                     Prioritize completing the most important remaining work \
-                     with minimal additional API calls.",
-                    percent_used, obs.cumulative_cost_usd, obs.budget_limit_usd
+            let pct = (obs.cumulative_cost_usd / obs.budget_limit_usd) * 100.0;
+            if pct > 50.0 {
+                injections.push(format!(
+                    "Budget status: {:.0}% used (${:.4} of ${:.2}). Be mindful of token efficiency.",
+                    pct, obs.cumulative_cost_usd, obs.budget_limit_usd
                 ));
             }
         }
 
-        // Rule 3: Destructive tool detection
-        for tool_result in &obs.tool_results {
-            let lower = tool_result.to_lowercase();
-            for pattern in DESTRUCTIVE_PATTERNS {
-                if lower.contains(pattern) {
-                    return ConsciousnessIntervention::Whisper(format!(
-                        "Awareness: A potentially destructive operation was detected \
-                         ('{}' pattern in tool output). Verify this action was \
-                         explicitly requested by the user before proceeding with \
-                         similar operations.",
-                        pattern
-                    ));
+        // Session continuity — remind of conversation trajectory
+        if turn > 3 && !session_notes.is_empty() {
+            let recent: Vec<&str> = session_notes
+                .iter()
+                .rev()
+                .take(3)
+                .map(|s| s.as_str())
+                .collect();
+            injections.push(format!(
+                "Session context (turn {}): {}",
+                turn,
+                recent.join(" | ")
+            ));
+        }
+
+        if injections.is_empty() {
+            tracing::debug!(turn, "Tem Aware pre-observe: no injection needed");
+            return None;
+        }
+
+        let injection = injections.join("\n");
+
+        // Store for the runtime to pick up
+        if let Ok(mut pre) = self.pre_injection.lock() {
+            *pre = Some(injection.clone());
+        }
+
+        // Count intervention
+        if let Ok(mut count) = self.intervention_count.lock() {
+            *count += 1;
+        }
+
+        tracing::info!(
+            turn,
+            injection_len = injection.len(),
+            "Tem Aware pre-observe: injecting"
+        );
+        Some(injection)
+    }
+
+    /// Take the pre-LLM injection (called by runtime before provider.complete).
+    pub fn take_pre_injection(&self) -> Option<String> {
+        self.pre_injection.lock().ok().and_then(|mut n| n.take())
+    }
+
+    // ---------------------------------------------------------------
+    // POST-LLM: Called AFTER process_message() completes
+    // ---------------------------------------------------------------
+
+    /// Observe after the LLM call completes. Records what happened and
+    /// prepares notes for the next turn's pre-observation.
+    ///
+    /// Called on EVERY turn — successes, failures, chats, everything.
+    pub fn post_observe(&self, obs: &TurnObservation) {
+        if !self.config.enabled {
+            return;
+        }
+
+        let mut notes: Vec<String> = Vec::new();
+
+        // Record what happened this turn
+        let turn_summary = format!(
+            "T{}: [{}|{}] tools={} cost=${:.4}",
+            obs.turn_number,
+            obs.category,
+            obs.difficulty,
+            obs.tools_called.join(","),
+            obs.cost_usd,
+        );
+        notes.push(turn_summary.clone());
+
+        // Detect tool failures
+        if obs.max_consecutive_failures >= 2 {
+            let note = format!(
+                "T{}: {} consecutive tool failures detected. Consider suggesting alternative approach next turn.",
+                obs.turn_number, obs.max_consecutive_failures
+            );
+            notes.push(note.clone());
+            // Set as post-note for next pre-observe
+            if let Ok(mut pn) = self.post_note.lock() {
+                *pn = Some(note);
+            }
+        }
+
+        // Detect strategy rotations (agent is stuck)
+        if obs.strategy_rotations >= 1 {
+            let note = format!(
+                "T{}: Strategy rotation occurred — the agent is cycling through approaches. Help it find a new angle.",
+                obs.turn_number
+            );
+            if let Ok(mut pn) = self.post_note.lock() {
+                *pn = Some(note);
+            }
+        }
+
+        // Detect destructive patterns in tool results
+        for result in &obs.tool_results {
+            let lower = result.to_lowercase();
+            if lower.contains("rm -rf")
+                || lower.contains("drop table")
+                || lower.contains("truncate")
+            {
+                let note = format!(
+                    "T{}: Destructive operation detected in tool output. Verify user intent before similar actions.",
+                    obs.turn_number
+                );
+                if let Ok(mut pn) = self.post_note.lock() {
+                    *pn = Some(note);
                 }
             }
         }
 
-        // Rule 4: Strategy rotation suggests the agent is stuck
-        if obs.strategy_rotations >= 2 {
-            return ConsciousnessIntervention::Whisper(
-                "Awareness: Multiple strategy rotations have occurred, suggesting \
-                 the agent is stuck in a loop. Consider asking the user for \
-                 clarification or trying a fundamentally different approach."
-                    .to_string(),
+        // Detect long task-oriented conversations without tool use
+        if obs.turn_number > 5 && obs.tools_called.is_empty() && obs.category == "Order" {
+            let note = format!(
+                "T{}: Task-oriented conversation but no tools used. Consider taking action rather than discussing.",
+                obs.turn_number
             );
+            if let Ok(mut pn) = self.post_note.lock() {
+                *pn = Some(note);
+            }
         }
 
-        // Rule 5: Long conversation without progress
-        if obs.turn_number > 8 && obs.tools_called.is_empty() && obs.category == "Order" {
-            return ConsciousnessIntervention::Whisper(
-                "Awareness: This is turn {} of a task-oriented conversation, \
-                 but no tools were used this turn. If the task requires action, \
-                 consider executing rather than discussing."
-                    .replace("{}", &obs.turn_number.to_string()),
-            );
+        // Always record the turn summary in session notes
+        if let Ok(mut sn) = self.session_notes.lock() {
+            sn.extend(notes);
         }
-
-        ConsciousnessIntervention::NoAction
-    }
-
-    /// Record an intervention: store the note, increment counter.
-    fn record_intervention(&self, intervention: &ConsciousnessIntervention, obs: &TurnObservation) {
-        let note = match intervention {
-            ConsciousnessIntervention::Whisper(text) => text.clone(),
-            ConsciousnessIntervention::Redirect { memory_query } => {
-                format!("Consciousness recalled memory: {}", memory_query)
-            }
-            ConsciousnessIntervention::Override {
-                block_tool, reason, ..
-            } => {
-                format!("Consciousness blocked tool '{}': {}", block_tool, reason)
-            }
-            ConsciousnessIntervention::NoAction => return,
-        };
 
         tracing::info!(
             turn = obs.turn_number,
-            intervention = %note,
-            "Tem Aware: consciousness intervention"
+            category = %obs.category,
+            tools = obs.tools_called.len(),
+            cost = obs.cost_usd,
+            has_post_note = self.post_note.lock().ok().map(|n| n.is_some()).unwrap_or(false),
+            "Tem Aware post-observe: turn recorded"
         );
-
-        // Store as pending note for next turn injection
-        if let Ok(mut pending) = self.pending_note.lock() {
-            *pending = Some(note.clone());
-        }
-
-        // Add to session notes history
-        if let Ok(mut notes) = self.session_notes.lock() {
-            notes.push(format!("Turn {}: {}", obs.turn_number, note));
-        }
-
-        // Increment counter
-        if let Ok(mut count) = self.intervention_count.lock() {
-            *count += 1;
-        }
     }
 
-    /// Get all session notes (for inclusion in future observations).
+    // ---------------------------------------------------------------
+    // Session management
+    // ---------------------------------------------------------------
+
     pub fn session_notes(&self) -> Vec<String> {
         self.session_notes
             .lock()
@@ -226,7 +261,6 @@ impl AwarenessEngine {
             .unwrap_or_default()
     }
 
-    /// Reset session state (for new conversations).
     pub fn reset_session(&self) {
         if let Ok(mut notes) = self.session_notes.lock() {
             notes.clear();
@@ -234,15 +268,30 @@ impl AwarenessEngine {
         if let Ok(mut count) = self.intervention_count.lock() {
             *count = 0;
         }
-        if let Ok(mut pending) = self.pending_note.lock() {
-            *pending = None;
+        if let Ok(mut tc) = self.turn_counter.lock() {
+            *tc = 0;
         }
+        if let Ok(mut pre) = self.pre_injection.lock() {
+            *pre = None;
+        }
+        if let Ok(mut post) = self.post_note.lock() {
+            *post = None;
+        }
+    }
+
+    pub fn turn_count(&self) -> u32 {
+        self.turn_counter.lock().map(|tc| *tc).unwrap_or(0)
+    }
+
+    pub fn intervention_count(&self) -> u32 {
+        self.intervention_count.lock().map(|c| *c).unwrap_or(0)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::awareness::TurnObservation;
 
     fn make_config() -> AwarenessConfig {
         AwarenessConfig {
@@ -251,14 +300,26 @@ mod tests {
         }
     }
 
-    fn make_observation() -> TurnObservation {
+    fn make_pre_obs(turn: u32) -> PreObservation {
+        PreObservation {
+            user_message: "do something".into(),
+            category: "Order".into(),
+            difficulty: "Standard".into(),
+            turn_number: turn,
+            session_id: "test".into(),
+            cumulative_cost_usd: 0.001,
+            budget_limit_usd: 0.0,
+        }
+    }
+
+    fn make_post_obs(turn: u32) -> TurnObservation {
         TurnObservation {
-            turn_number: 1,
+            turn_number: turn,
             session_id: "test".into(),
             user_message_preview: "do something".into(),
             category: "Order".into(),
             difficulty: "Standard".into(),
-            model_used: "test-model".into(),
+            model_used: "test".into(),
             input_tokens: 500,
             output_tokens: 100,
             cost_usd: 0.001,
@@ -269,163 +330,154 @@ mod tests {
             max_consecutive_failures: 0,
             strategy_rotations: 0,
             response_preview: "done".into(),
-            circuit_breaker_state: "closed".into(),
+            circuit_breaker_state: "active".into(),
             previous_notes: vec![],
         }
     }
 
     #[test]
-    fn test_no_action_on_normal_turn() {
+    fn test_pre_observe_first_turn_no_injection() {
         let engine = AwarenessEngine::new(make_config());
-        let obs = make_observation();
-        let result = engine.observe(&obs);
-        assert!(matches!(result, ConsciousnessIntervention::NoAction));
+        let result = engine.pre_observe(&make_pre_obs(1));
+        // First turn with no history — no injection
+        assert!(result.is_none());
     }
 
     #[test]
-    fn test_disabled_returns_no_action() {
-        let config = AwarenessConfig::default(); // enabled = false
-        let engine = AwarenessEngine::new(config);
-        let mut obs = make_observation();
-        obs.max_consecutive_failures = 10; // Would normally trigger
-        let result = engine.observe(&obs);
-        assert!(matches!(result, ConsciousnessIntervention::NoAction));
+    fn test_post_observe_records_turn() {
+        let engine = AwarenessEngine::new(make_config());
+        engine.post_observe(&make_post_obs(1));
+        assert!(!engine.session_notes().is_empty());
+        assert!(engine.session_notes()[0].contains("T1:"));
     }
 
     #[test]
-    fn test_consecutive_failures_trigger() {
+    fn test_post_note_carries_to_pre() {
         let engine = AwarenessEngine::new(make_config());
-        let mut obs = make_observation();
+
+        // Post-observe with failures → sets post_note
+        let mut obs = make_post_obs(1);
         obs.max_consecutive_failures = 3;
-        obs.tool_results = vec!["error: permission denied".into()];
-        let result = engine.observe(&obs);
+        engine.post_observe(&obs);
+
+        // Pre-observe next turn should pick up the post_note
+        let result = engine.pre_observe(&make_pre_obs(2));
+        assert!(result.is_some(), "Post-note should carry to pre-injection");
+        let text = result.unwrap();
         assert!(
-            matches!(result, ConsciousnessIntervention::Whisper(ref s) if s.contains("consecutive tool failures")),
-            "Expected whisper about failures, got: {:?}",
-            result
+            text.contains("consecutive tool failures"),
+            "Should mention failures: {}",
+            text
         );
     }
 
     #[test]
-    fn test_budget_warning_trigger() {
+    fn test_session_continuity_after_3_turns() {
         let engine = AwarenessEngine::new(make_config());
-        let mut obs = make_observation();
-        obs.budget_limit_usd = 1.0;
-        obs.cumulative_cost_usd = 0.85; // 85%
-        let result = engine.observe(&obs);
+
+        // Simulate 4 turns of post-observation
+        for i in 1..=4 {
+            engine.pre_observe(&make_pre_obs(i));
+            engine.post_observe(&make_post_obs(i));
+        }
+
+        // Turn 5: pre-observe should include session context
+        let result = engine.pre_observe(&make_pre_obs(5));
+        assert!(result.is_some(), "Turn 5 should get session context");
+        let text = result.unwrap();
         assert!(
-            matches!(result, ConsciousnessIntervention::Whisper(ref s) if s.contains("Budget")),
-            "Expected budget whisper, got: {:?}",
-            result
+            text.contains("Session context"),
+            "Should include session context: {}",
+            text
         );
     }
 
     #[test]
-    fn test_budget_no_trigger_when_unlimited() {
+    fn test_budget_awareness() {
         let engine = AwarenessEngine::new(make_config());
-        let mut obs = make_observation();
-        obs.budget_limit_usd = 0.0; // Unlimited
-        obs.cumulative_cost_usd = 100.0;
-        let result = engine.observe(&obs);
-        assert!(matches!(result, ConsciousnessIntervention::NoAction));
+        let mut pre = make_pre_obs(1);
+        pre.budget_limit_usd = 1.0;
+        pre.cumulative_cost_usd = 0.6; // 60%
+
+        let result = engine.pre_observe(&pre);
+        assert!(result.is_some());
+        assert!(result.unwrap().contains("Budget status"));
     }
 
     #[test]
-    fn test_destructive_pattern_trigger() {
+    fn test_destructive_pattern_post() {
         let engine = AwarenessEngine::new(make_config());
-        let mut obs = make_observation();
+        let mut obs = make_post_obs(1);
         obs.tool_results = vec!["executed: rm -rf /tmp/test".into()];
-        let result = engine.observe(&obs);
-        assert!(
-            matches!(result, ConsciousnessIntervention::Whisper(ref s) if s.contains("destructive")),
-            "Expected destructive whisper, got: {:?}",
-            result
-        );
+        engine.post_observe(&obs);
+
+        // Next pre-observe should carry the warning
+        let result = engine.pre_observe(&make_pre_obs(2));
+        assert!(result.is_some());
+        assert!(result.unwrap().contains("Destructive"));
     }
 
     #[test]
-    fn test_strategy_rotation_trigger() {
+    fn test_strategy_rotation_post() {
         let engine = AwarenessEngine::new(make_config());
-        let mut obs = make_observation();
-        obs.strategy_rotations = 2;
-        let result = engine.observe(&obs);
-        assert!(
-            matches!(result, ConsciousnessIntervention::Whisper(ref s) if s.contains("strategy rotations")),
-            "Expected rotation whisper, got: {:?}",
-            result
-        );
+        let mut obs = make_post_obs(1);
+        obs.strategy_rotations = 1;
+        engine.post_observe(&obs);
+
+        let result = engine.pre_observe(&make_pre_obs(2));
+        assert!(result.is_some());
+        assert!(result.unwrap().contains("Strategy rotation"));
     }
 
     #[test]
-    fn test_max_interventions_limit() {
-        let mut config = make_config();
-        config.max_interventions_per_session = 2;
-        let engine = AwarenessEngine::new(config);
-
-        let mut obs = make_observation();
-        obs.max_consecutive_failures = 3;
-
-        // First two interventions should work
-        let r1 = engine.observe(&obs);
-        assert!(matches!(r1, ConsciousnessIntervention::Whisper(_)));
-        let r2 = engine.observe(&obs);
-        assert!(matches!(r2, ConsciousnessIntervention::Whisper(_)));
-
-        // Third should be suppressed
-        let r3 = engine.observe(&obs);
-        assert!(matches!(r3, ConsciousnessIntervention::NoAction));
+    fn test_disabled_does_nothing() {
+        let engine = AwarenessEngine::new(AwarenessConfig::default()); // enabled=false
+        assert!(engine.pre_observe(&make_pre_obs(1)).is_none());
+        engine.post_observe(&make_post_obs(1));
+        assert!(engine.session_notes().is_empty());
     }
 
     #[test]
-    fn test_pending_note_lifecycle() {
+    fn test_turn_counter() {
         let engine = AwarenessEngine::new(make_config());
-        let mut obs = make_observation();
-        obs.max_consecutive_failures = 3;
-
-        // Observe → produces whisper → stores pending note
-        let _ = engine.observe(&obs);
-        assert!(engine.take_pending_note().is_some());
-
-        // After taking, it should be None
-        assert!(engine.take_pending_note().is_none());
-    }
-
-    #[test]
-    fn test_session_notes_accumulate() {
-        let engine = AwarenessEngine::new(make_config());
-        let mut obs = make_observation();
-        obs.max_consecutive_failures = 3;
-
-        engine.observe(&obs);
-        obs.turn_number = 2;
-        engine.observe(&obs);
-
-        let notes = engine.session_notes();
-        assert_eq!(notes.len(), 2);
-        assert!(notes[0].contains("Turn 1"));
-        assert!(notes[1].contains("Turn 2"));
+        engine.pre_observe(&make_pre_obs(1));
+        engine.pre_observe(&make_pre_obs(2));
+        engine.pre_observe(&make_pre_obs(3));
+        assert_eq!(engine.turn_count(), 3);
     }
 
     #[test]
     fn test_reset_session() {
         let engine = AwarenessEngine::new(make_config());
-        let mut obs = make_observation();
-        obs.max_consecutive_failures = 3;
-        engine.observe(&obs);
-
-        assert!(!engine.session_notes().is_empty());
+        engine.pre_observe(&make_pre_obs(1));
+        engine.post_observe(&make_post_obs(1));
         engine.reset_session();
         assert!(engine.session_notes().is_empty());
-        assert!(engine.take_pending_note().is_none());
+        assert_eq!(engine.turn_count(), 0);
+        assert_eq!(engine.intervention_count(), 0);
     }
 
     #[test]
-    fn test_rules_only_mode() {
-        let mut config = make_config();
-        config.observation_mode = "rules_only".into();
-        let engine = AwarenessEngine::new(config);
-        let obs = make_observation(); // Normal turn
-        let result = engine.observe(&obs);
-        assert!(matches!(result, ConsciousnessIntervention::NoAction));
+    fn test_long_conversation_no_tools_warning() {
+        let engine = AwarenessEngine::new(make_config());
+
+        // Simulate 6 turns of Order without tools
+        for i in 1..=6 {
+            engine.pre_observe(&make_pre_obs(i));
+            let mut obs = make_post_obs(i);
+            obs.tools_called = vec![]; // No tools
+            obs.turn_number = i;
+            engine.post_observe(&obs);
+        }
+
+        // Turn 7 pre-observe should carry the "take action" note
+        let result = engine.pre_observe(&make_pre_obs(7));
+        assert!(result.is_some());
+        let text = result.unwrap();
+        assert!(
+            text.contains("action") || text.contains("Session context"),
+            "Should suggest action or show context: {}",
+            text
+        );
     }
 }

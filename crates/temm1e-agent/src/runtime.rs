@@ -783,24 +783,30 @@ impl AgentRuntime {
                 });
             }
 
-            // ── Tem Aware: inject consciousness note from previous turn ────
+            // ── Tem Aware: PRE-LLM consciousness observation ────────────
+            // Called on EVERY turn before tokens are spent.
             if let Some(ref awareness) = self.awareness {
-                if let Some(note) = awareness.take_pending_note() {
+                let pre_obs = crate::awareness_engine::PreObservation {
+                    user_message: user_text.clone(),
+                    category: classification_label.clone(),
+                    difficulty: difficulty_label.clone(),
+                    turn_number: turn_api_calls + 1,
+                    session_id: session.session_id.clone(),
+                    cumulative_cost_usd: self.budget.total_spend_usd(),
+                    budget_limit_usd: self.budget.max_spend_usd(),
+                };
+                if let Some(injection) = awareness.pre_observe(&pre_obs) {
                     let consciousness_block = format!(
                         "{{{{consciousness}}}}\n\
-                         [Observation from your awareness layer — consider this context]\n\
+                         [Your awareness layer observes this conversation. Consider this context:]\n\
                          {}\n\
                          {{{{/consciousness}}}}",
-                        note
+                        injection
                     );
                     request.system = Some(match request.system {
                         Some(existing) => format!("{consciousness_block}\n\n{existing}"),
                         None => consciousness_block,
                     });
-                    tracing::info!(
-                        note_len = note.len(),
-                        "Tem Aware: consciousness note injected into system prompt"
-                    );
                 }
             }
 
@@ -1306,7 +1312,9 @@ impl AgentRuntime {
                     }
                 }
 
-                // ── Tem Aware: observe this turn ─────────────────
+                // ── Tem Aware: POST-LLM consciousness observation ──────
+                // Called on EVERY turn after response is ready.
+                // Records what happened, prepares notes for next turn.
                 if let Some(ref awareness) = self.awareness {
                     let obs = crate::awareness::TurnObservation {
                         turn_number: turn_api_calls,
@@ -1328,9 +1336,7 @@ impl AgentRuntime {
                         circuit_breaker_state: "active".to_string(),
                         previous_notes: awareness.session_notes(),
                     };
-                    let _intervention = awareness.observe(&obs);
-                    // Note: intervention is stored in awareness.pending_note
-                    // and will be injected at the start of the next turn.
+                    awareness.post_observe(&obs);
                 }
 
                 // ── Status: Done ─────────────────────────────────
