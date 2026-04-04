@@ -1,4 +1,4 @@
-# Tem Debug — Zero Risk Mitigations
+# Tem Vigil — Zero Risk Mitigations
 
 > Three additions that close the remaining non-zero risks in the bug reporter.
 > After these, all user-facing and system risks reach 0%.

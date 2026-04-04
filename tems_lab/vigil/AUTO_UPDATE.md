@@ -1,4 +1,4 @@
-# Tem Debug: Auto-Update — Risk Analysis and Design
+# Tem Vigil: Auto-Update — Risk Analysis and Design
 
 > **Date:** 2026-04-04
 > **Status:** Research complete. HIGH RISK — requires careful design.
@@ -24,7 +24,7 @@ Tem downloads new binary → verifies signature → notifies user
 User restarts (or Tem self-restarts during idle) → bug is fixed
 ```
 
-The auto-issue system (Tem Debug Layer 1) and auto-update complete a cycle: Tem reports its own bugs and receives its own fixes.
+The auto-issue system (Tem Vigil Layer 1) and auto-update complete a cycle: Tem reports its own bugs and receives its own fixes.
 
 ---
 

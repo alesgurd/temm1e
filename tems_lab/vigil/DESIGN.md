@@ -1,8 +1,8 @@
-# Tem Debug — Self-Diagnosing Bug Reporter
+# Tem Vigil — Self-Diagnosing Bug Reporter
 
 > **Date:** 2026-04-04
 > **Status:** Design phase
-> **Branch:** tem-debug
+> **Branch:** tem-vigil
 
 ---
 

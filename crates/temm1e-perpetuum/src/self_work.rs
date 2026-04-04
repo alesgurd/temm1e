@@ -32,9 +32,9 @@ pub async fn execute_self_work(
                 Ok("Skipped: no LLM caller available".to_string())
             }
         }
-        SelfWorkKind::BugReview => {
+        SelfWorkKind::Vigil => {
             if let Some(caller) = caller {
-                review_bugs(store, caller).await
+                run_vigil(store, caller).await
             } else {
                 Ok("Skipped: no LLM caller available".to_string())
             }
@@ -130,17 +130,14 @@ fn is_consent_given() -> bool {
     let path = dirs::home_dir()
         .unwrap_or_default()
         .join(".temm1e")
-        .join("bug_reporter.toml");
+        .join("vigil.toml");
     std::fs::read_to_string(&path)
         .unwrap_or_default()
         .contains("consent_given = true")
 }
 
 /// Bug review: scan logs for recurring errors, triage via LLM, report to GitHub.
-async fn review_bugs(
-    store: &Arc<Store>,
-    caller: &Arc<dyn LlmCaller>,
-) -> Result<String, Temm1eError> {
+async fn run_vigil(store: &Arc<Store>, caller: &Arc<dyn LlmCaller>) -> Result<String, Temm1eError> {
     // Check rate limit (max 1 report per 6 hours)
     if let Ok(notes) = store.get_volition_notes(20).await {
         for note in &notes {
@@ -148,7 +145,7 @@ async fn review_bugs(
                 if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(ts_str.trim()) {
                     let elapsed = chrono::Utc::now() - dt.with_timezone(&chrono::Utc);
                     if elapsed < chrono::Duration::hours(6) {
-                        return Ok("BugReview: rate limited, skipping".to_string());
+                        return Ok("Vigil: rate limited, skipping".to_string());
                     }
                 }
                 break;
@@ -161,7 +158,7 @@ async fn review_bugs(
     let errors = log_scanner::scan_recent_errors(&log_path, 6, 2);
 
     if errors.is_empty() {
-        return Ok("BugReview: no recurring errors found".to_string());
+        return Ok("Vigil: no recurring errors found".to_string());
     }
 
     // Load GitHub token (if not configured, triage only — no reporting)
@@ -187,7 +184,7 @@ async fn review_bugs(
                         target: "perpetuum",
                         signature = %error.signature,
                         count = error.count,
-                        "BugReview: found reportable bug"
+                        "Vigil: found reportable bug"
                     );
 
                     // Try to report to GitHub if configured
@@ -200,7 +197,7 @@ async fn review_bugs(
                                     tracing::debug!(
                                         target: "perpetuum",
                                         signature = %error.signature,
-                                        "BugReview: already reported, skipping"
+                                        "Vigil: already reported, skipping"
                                     );
                                 }
                                 Ok(false) => {
@@ -230,13 +227,13 @@ async fn review_bugs(
                                             tracing::info!(
                                                 target: "perpetuum",
                                                 url = %url,
-                                                "BugReview: issue created"
+                                                "Vigil: issue created"
                                             );
                                         }
                                         Err(e) => {
                                             tracing::warn!(
                                                 error = %e,
-                                                "BugReview: GitHub issue creation failed"
+                                                "Vigil: GitHub issue creation failed"
                                             );
                                         }
                                     }
@@ -244,7 +241,7 @@ async fn review_bugs(
                                 Err(e) => {
                                     tracing::warn!(
                                         error = %e,
-                                        "BugReview: dedup check failed"
+                                        "Vigil: dedup check failed"
                                     );
                                 }
                             }
@@ -253,7 +250,7 @@ async fn review_bugs(
                 }
             }
             Err(e) => {
-                tracing::warn!(error = %e, "BugReview: LLM triage failed for one error");
+                tracing::warn!(error = %e, "Vigil: LLM triage failed for one error");
             }
         }
     }
@@ -263,7 +260,7 @@ async fn review_bugs(
         total_errors = errors.len(),
         bugs = bugs_found,
         reported,
-        "BugReview complete"
+        "Vigil complete"
     );
 
     // Record timestamp to enforce rate limit
@@ -275,7 +272,7 @@ async fn review_bugs(
         .await?;
 
     Ok(format!(
-        "BugReview: scanned {} error groups, {} bugs found, {} reported to GitHub",
+        "Vigil: scanned {} error groups, {} bugs found, {} reported to GitHub",
         errors.len(),
         bugs_found,
         reported

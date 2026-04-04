@@ -1,15 +1,15 @@
-# Tem Debug: Self-Diagnosing Bug Reporting for Autonomous AI Agents
+# Tem Vigil: Self-Diagnosing Bug Reporting for Autonomous AI Agents
 
 > **Authors:** Quan Duong, Tem (TEMM1E Labs)
 > **Date:** April 2026
 > **Status:** Design complete. Pre-implementation.
-> **Branch:** `tem-debug`
+> **Branch:** `tem-vigil`
 
 ---
 
 ## Abstract
 
-We present Tem Debug, a two-layer self-diagnosis system for TEMM1E — an autonomous AI agent runtime. Layer 0 provides centralized structured logging with rotation to `~/.temm1e/logs/`, solving the baseline observability gap where all tracing output was lost unless manually redirected. Layer 1 introduces autonomous bug reporting: during Perpetuum Sleep phase, the agent reviews its own error logs via LLM triage, sanitizes sensitive data, deduplicates against existing GitHub issues, and — with explicit user consent — creates structured bug reports on the project repository.
+We present Tem Vigil, a two-layer self-diagnosis system for TEMM1E — an autonomous AI agent runtime. Layer 0 provides centralized structured logging with rotation to `~/.temm1e/logs/`, solving the baseline observability gap where all tracing output was lost unless manually redirected. Layer 1 introduces autonomous bug reporting: during Perpetuum Sleep phase, the agent reviews its own error logs via LLM triage, sanitizes sensitive data, deduplicates against existing GitHub issues, and — with explicit user consent — creates structured bug reports on the project repository.
 
 The system addresses three problems simultaneously: (1) non-developer users cannot self-debug, (2) the development team discovers bugs only through manual Discord/Telegram reports with insufficient context, and (3) no existing system enables an AI agent to self-diagnose failures and file bug reports about itself.
 

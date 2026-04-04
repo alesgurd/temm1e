@@ -1,4 +1,4 @@
-# Tem Debug — Edge Cases for Indefinite Operation
+# Tem Vigil — Edge Cases for Indefinite Operation
 
 > A system that runs forever must handle every edge case that probability
 > guarantees WILL happen given enough time. A 0.1% risk per cycle

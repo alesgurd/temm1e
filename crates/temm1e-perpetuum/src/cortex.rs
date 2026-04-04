@@ -431,7 +431,7 @@ impl Cortex {
             "log_introspection" => SelfWorkKind::LogIntrospection,
             "session_cleanup" => SelfWorkKind::SessionCleanup,
             "blueprint_refinement" => SelfWorkKind::BlueprintRefinement,
-            "bug_review" => SelfWorkKind::BugReview,
+            "vigil" => SelfWorkKind::Vigil,
             _ => SelfWorkKind::MemoryConsolidation,
         };
 

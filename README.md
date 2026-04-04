@@ -387,6 +387,51 @@ Tem is no longer a request-response agent. Perpetuum makes Tem a **persistent, t
 
 [Research paper →](tems_lab/perpetuum/RESEARCH_PAPER.md) · [Vision →](tems_lab/perpetuum/VISION.md) · [Implementation →](tems_lab/perpetuum/IMPLEMENTATION_PLAN.md) · [Full lab →](tems_lab/perpetuum/)
 
+### Tem Vigil — Self-Diagnosing Bug Reporter
+
+Tem watches its own health. During Perpetuum Sleep, Vigil scans the persistent log file for recurring errors, triages them via LLM, and — with your permission — files structured bug reports on GitHub.
+
+**This is not a crash reporter.** It's an AI agent that self-diagnoses failures and tells its developers what went wrong — without you lifting a finger.
+
+**How it works:**
+```
+Tem goes idle → enters Sleep → Vigil activates
+  → Scans ~/.temm1e/logs/temm1e.log for ERROR/WARN
+  → Groups by error signature (file:line + message)
+  → LLM triages each: BUG / USER_ERROR / TRANSIENT / CONFIG
+  → If BUG found: scrubs credentials, deduplicates, creates GitHub issue
+```
+
+**User manual:**
+
+```
+/vigil status              Show Vigil configuration
+/vigil auto                Enable auto-reporting (with 60s review window)
+/vigil disable             Disable all reporting
+/addkey github             Add GitHub PAT for issue creation
+```
+
+**Setup (2 steps):**
+1. Run `/addkey github` — paste a GitHub PAT with `public_repo` scope
+2. Run `/vigil auto` — enable auto-reporting
+
+That's it. Vigil handles everything else: log scanning, triage, credential scrubbing, deduplication, issue creation. You'll be notified when a report is filed.
+
+**What gets sent:** Error message, file:line location, occurrence count, TEMM1E version, OS info, LLM triage category.
+
+**What NEVER gets sent:** API keys, user messages, conversation history, vault contents, file paths with usernames, IP addresses.
+
+**Safety:**
+- 3-layer credential scrubbing (regex → path/IP → entropy-based)
+- Explicit opt-in (you must run both `/addkey github` AND `/vigil auto`)
+- Rate limited: max 1 report per 6 hours
+- Dedup: same bug is only reported once
+- GitHub PAT scope warning: Vigil alerts you if your token has more permissions than needed
+
+**Persistent logging (always on):** All logs automatically saved to `~/.temm1e/logs/temm1e.log` with daily rotation and 7-day retention. No setup needed — just attach the file to a GitHub issue if you need to report something manually.
+
+[Research paper →](tems_lab/vigil/RESEARCH_PAPER.md) · [Design →](tems_lab/vigil/DESIGN.md) · [Full lab →](tems_lab/vigil/)
+
 ---
 
 ## Interactive TUI

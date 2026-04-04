@@ -71,7 +71,7 @@ pub struct Temm1eConfig {
     #[serde(default)]
     pub perpetuum: PerpetualConfig,
     #[serde(default)]
-    pub bug_reporter: BugReporterConfig,
+    pub vigil: VigilConfig,
 }
 
 /// Perpetuum configuration — perpetual time-aware entity framework.
@@ -160,7 +160,7 @@ impl Default for ConsciousnessConfig {
 
 /// Bug reporter configuration — self-diagnosing bug reporting.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BugReporterConfig {
+pub struct VigilConfig {
     /// Enable bug reporting. ON by default, but requires consent + GitHub PAT.
     #[serde(default = "default_true")]
     pub enabled: bool,
@@ -172,7 +172,7 @@ pub struct BugReporterConfig {
     pub auto_report: bool,
 }
 
-impl Default for BugReporterConfig {
+impl Default for VigilConfig {
     fn default() -> Self {
         Self {
             enabled: true,
@@ -1009,7 +1009,7 @@ mod tests {
             gaze: GazeConfig::default(),
             consciousness: ConsciousnessConfig::default(),
             perpetuum: PerpetualConfig::default(),
-            bug_reporter: BugReporterConfig::default(),
+            vigil: VigilConfig::default(),
         };
 
         let toml_str = toml::to_string(&config).unwrap();

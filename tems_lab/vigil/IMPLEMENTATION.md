@@ -1,7 +1,7 @@
-# Tem Debug — Implementation Guide
+# Tem Vigil — Implementation Guide
 
 > Every file path, function signature, type definition, and integration point
-> needed to implement Tem Debug without ambiguity.
+> needed to implement Tem Vigil without ambiguity.
 
 ---
 

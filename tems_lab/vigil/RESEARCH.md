@@ -1,4 +1,4 @@
-# Tem Debug: Self-Diagnosing AI Agent — Research Notes
+# Tem Vigil: Self-Diagnosing AI Agent — Research Notes
 
 > **Date:** 2026-04-04
 > **Status:** Research complete, design approved

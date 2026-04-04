@@ -2556,7 +2556,7 @@ async fn main() -> Result<()> {
                                         return;
                                     }
 
-                                    // /addkey github — GitHub PAT for bug reporting
+                                    // /addkey github — GitHub PAT for vigil
                                     if cmd_lower == "/addkey github" {
                                         pending_raw_keys_worker.lock().await.insert(msg.chat_id.clone());
                                         let reply = temm1e_core::types::message::OutboundMessage {
@@ -2605,26 +2605,26 @@ async fn main() -> Result<()> {
                                         return;
                                     }
 
-                                    // /bugreport — self-diagnosis bug reporting commands
-                                    if cmd_lower.starts_with("/bugreport") {
-                                        let subcmd = cmd_lower.strip_prefix("/bugreport").unwrap_or("").trim();
+                                    // /vigil — self-diagnosis vigil commands
+                                    if cmd_lower.starts_with("/vigil") {
+                                        let subcmd = cmd_lower.strip_prefix("/vigil").unwrap_or("").trim();
                                         let reply_text = match subcmd {
                                             "disable" => {
                                                 // Persist to config file
                                                 let config_path = dirs::home_dir()
                                                     .unwrap_or_default()
                                                     .join(".temm1e")
-                                                    .join("bug_reporter.toml");
+                                                    .join("vigil.toml");
                                                 std::fs::write(&config_path, "enabled = false\nconsent_given = false\nauto_report = false\n").ok();
-                                                "Bug reporting disabled. Re-enable by deleting ~/.temm1e/bug_reporter.toml.".to_string()
+                                                "Vigil disabled. Re-enable by deleting ~/.temm1e/vigil.toml.".to_string()
                                             }
                                             "auto" => {
                                                 let config_path = dirs::home_dir()
                                                     .unwrap_or_default()
                                                     .join(".temm1e")
-                                                    .join("bug_reporter.toml");
+                                                    .join("vigil.toml");
                                                 std::fs::write(&config_path, "enabled = true\nconsent_given = true\nauto_report = true\n").ok();
-                                                "Auto-reporting enabled. I'll show a 60-second window before each report.".to_string()
+                                                "Vigil auto-reporting enabled. I'll show a 60-second window before each report.".to_string()
                                             }
                                             "status" => {
                                                 let has_github = load_credentials_file()
@@ -2632,26 +2632,26 @@ async fn main() -> Result<()> {
                                                 let consent_path = dirs::home_dir()
                                                     .unwrap_or_default()
                                                     .join(".temm1e")
-                                                    .join("bug_reporter.toml");
+                                                    .join("vigil.toml");
                                                 let consent = std::fs::read_to_string(&consent_path)
                                                     .unwrap_or_default()
                                                     .contains("consent_given = true");
                                                 format!(
-                                                    "Bug Reporter Status:\n\
+                                                    "Tem Vigil Status:\n\
                                                      - GitHub PAT: {}\n\
                                                      - Consent: {}\n\
                                                      - Log file: {}\n\n\
-                                                     Commands: /bugreport auto, /bugreport disable, /bugreport status",
+                                                     Commands: /vigil auto, /vigil disable, /vigil status",
                                                     if has_github { "configured" } else { "not set — run /addkey github" },
                                                     if consent { "granted" } else { "not yet" },
                                                     temm1e_observable::file_logger::current_log_path().display(),
                                                 )
                                             }
                                             _ => {
-                                                "Bug Reporter Commands:\n\
-                                                 - /bugreport status — show current configuration\n\
-                                                 - /bugreport auto — enable auto-reporting (with 60s review window)\n\
-                                                 - /bugreport disable — disable all bug reporting\n\
+                                                "Tem Vigil Commands:\n\
+                                                 - /vigil status — show current configuration\n\
+                                                 - /vigil auto — enable auto-reporting (with 60s review window)\n\
+                                                 - /vigil disable — disable all vigil\n\
                                                  - /addkey github — add GitHub PAT for issue creation".to_string()
                                             }
                                         };
@@ -5304,8 +5304,8 @@ Just type a message to chat with the AI agent.",
                          /browser close — Save sessions and close browser\n\
                          /browser sessions — List saved web sessions\n\
                          /browser forget <service> — Delete a saved session\n\
-                         /bugreport — Bug reporter status and configuration\n\
-                         /addkey github — Add GitHub PAT for auto bug reporting\n\
+                         /vigil — Bug reporter status and configuration\n\
+                         /addkey github — Add GitHub PAT for auto vigil\n\
                          /quit — Exit the CLI chat\n\n\
                          Just type a message to chat with the AI agent.\n",
                         env!("CARGO_PKG_VERSION"),
@@ -5316,33 +5316,33 @@ Just type a message to chat with the AI agent.",
                     continue;
                 }
 
-                // /bugreport — self-diagnosis bug reporting
-                if cmd_lower.starts_with("/bugreport") {
-                    let subcmd = cmd_lower.strip_prefix("/bugreport").unwrap_or("").trim();
+                // /vigil — self-diagnosis vigil
+                if cmd_lower.starts_with("/vigil") {
+                    let subcmd = cmd_lower.strip_prefix("/vigil").unwrap_or("").trim();
                     match subcmd {
                         "disable" => {
                             let config_path = dirs::home_dir()
                                 .unwrap_or_default()
                                 .join(".temm1e")
-                                .join("bug_reporter.toml");
+                                .join("vigil.toml");
                             std::fs::write(
                                 &config_path,
                                 "enabled = false\nconsent_given = false\nauto_report = false\n",
                             )
                             .ok();
-                            println!("Bug reporting disabled.");
+                            println!("Vigil disabled.");
                         }
                         "auto" => {
                             let config_path = dirs::home_dir()
                                 .unwrap_or_default()
                                 .join(".temm1e")
-                                .join("bug_reporter.toml");
+                                .join("vigil.toml");
                             std::fs::write(
                                 &config_path,
                                 "enabled = true\nconsent_given = true\nauto_report = true\n",
                             )
                             .ok();
-                            println!("Auto-reporting enabled.");
+                            println!("Vigil auto-reporting enabled.");
                         }
                         "status" => {
                             let has_github = load_credentials_file()
@@ -5350,12 +5350,12 @@ Just type a message to chat with the AI agent.",
                             let consent_path = dirs::home_dir()
                                 .unwrap_or_default()
                                 .join(".temm1e")
-                                .join("bug_reporter.toml");
+                                .join("vigil.toml");
                             let consent = std::fs::read_to_string(&consent_path)
                                 .unwrap_or_default()
                                 .contains("consent_given = true");
                             println!(
-                                "\nBug Reporter Status:\n\
+                                "\nTem Vigil Status:\n\
                                  - GitHub PAT: {}\n\
                                  - Consent: {}\n\
                                  - Log file: {}\n",
@@ -5367,17 +5367,17 @@ Just type a message to chat with the AI agent.",
                                 if consent {
                                     "granted"
                                 } else {
-                                    "not yet — run /bugreport auto"
+                                    "not yet — run /vigil auto"
                                 },
                                 temm1e_observable::file_logger::current_log_path().display(),
                             );
                         }
                         _ => {
                             println!(
-                                "\nBug Reporter Commands:\n\
-                                 /bugreport status — show current configuration\n\
-                                 /bugreport auto — enable auto-reporting\n\
-                                 /bugreport disable — disable all bug reporting\n\
+                                "\nTem Vigil Commands:\n\
+                                 /vigil status — show current configuration\n\
+                                 /vigil auto — enable auto-reporting\n\
+                                 /vigil disable — disable all vigil\n\
                                  /addkey github — add GitHub PAT for issue creation\n"
                             );
                         }
