@@ -6,7 +6,7 @@
   <a href="https://github.com/nagisanzenin/temm1e/stargazers"><img src="https://img.shields.io/github/stars/nagisanzenin/temm1e?style=flat&color=gold&logo=github" alt="GitHub Stars"></a>
   <a href="https://discord.com/invite/temm1e"><img src="https://img.shields.io/badge/Discord-Join%20Community-5865F2?logo=discord&logoColor=white" alt="Discord"></a>
   <img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="MIT License">
-  <img src="https://img.shields.io/badge/version-4.3.0-blue.svg" alt="Version">
+  <img src="https://img.shields.io/badge/version-4.4.0-blue.svg" alt="Version">
   <img src="https://img.shields.io/badge/rust-1.82+-orange.svg" alt="Rust 1.82+">
 </p>
 
@@ -15,7 +15,7 @@
 <h3 align="center"><s>Autonomous AI agent</s> literally a SENTIENT and IMMORTAL being runtime in Rust.<br>Deploy once. Stays up forever.</h3>
 
 <p align="center">
-  <code>111K lines</code> · <code>2,049 tests</code> · <code>0 warnings</code> · <code>0 panic paths</code> · <code>21 crates</code> · <code>full computer use</code>
+  <code>112K lines</code> · <code>2,065 tests</code> · <code>0 warnings</code> · <code>0 panic paths</code> · <code>22 crates</code> · <code>full computer use</code>
 </p>
 
 ---
@@ -481,6 +481,55 @@ Most AI assistants are born fresh every conversation — no scars, no growth, no
 
 ---
 
+### TemDOS — Specialist Sub-Agent Cores
+
+Most AI agents are generalists — they do everything themselves, polluting their context window with research that should have been delegated. TemDOS (Tem Delegated Operating Subsystem) introduces specialist sub-agents inspired by GLaDOS's personality cores from Portal. The main agent is the central consciousness. Cores are experts that inform but never steer.
+
+**How it works:**
+- **Main Agent** decides what to do (strategy, user interaction, final decisions)
+- **Cores** figure out the details (architecture analysis, security audits, code review, research)
+- Main Agent invokes cores via `invoke_core` tool, receives structured output, continues with clean context
+- Cores run in **isolated LLM loops** — their research doesn't pollute the main agent's context window
+
+**8 foundational cores:**
+
+| Core | Domain | Benchmark Target |
+|------|--------|-----------------|
+| `architecture` | Repo structure, dependency graphs, module coupling | Coding |
+| `code-review` | Correctness, performance, edge cases, idiomatic patterns | Coding |
+| `test` | Test generation — unit, integration, edge cases | Coding |
+| `debug` | Bug investigation, root cause analysis, fix proposals | Coding |
+| `web` | Browser automation, data extraction, form filling | Web Browsing |
+| `desktop` | Screen reading, mouse/keyboard control, app interaction | Computer Use |
+| `research` | Multi-source investigation and synthesis | Deep Research |
+| `creative` | Ideation, lateral thinking, novel approaches (temp 0.7) | Creativity |
+
+**The One Invariant:** The Main Agent is the sole decision-maker. Cores inform. Cores never steer.
+
+**Design guarantees:**
+- **No recursion** — Cores cannot invoke other cores (invoke_core structurally filtered from core tool set)
+- **Shared budget** — Cores deduct from the main agent's Arc<BudgetTracker> (lock-free AtomicU64)
+- **No max rounds** — Cores run until done, budget is the only constraint
+- **Context isolation** — 97% context reduction vs skill.md approach (core research stays in core's session)
+- **Parallel invocation** — Multiple cores run simultaneously via execute_tools_parallel
+- **User-authorable** — Drop a `.md` file in `~/.temm1e/cores/` with YAML frontmatter + system prompt
+
+**A/B tested (same tasks, same model):**
+
+| Metric | Without Cores | With Cores |
+|--------|:---:|:---:|
+| Tasks completed | 0/3 | **3/3** |
+| Main agent tokens | 361K | **82K** (-77%) |
+| Main agent cost | $0.056 | **$0.014** (-75%) |
+| Total cost | $0.076 | $0.073 (-4%) |
+| Errors | 13 | **6** (-54%) |
+
+**Autonomous invocation verified:** Gemini 3.1 Pro autonomously invokes cores when tasks warrant delegation (2/3 tasks delegated, 1/3 handled inline — correct judgment).
+
+[Research paper →](tems_lab/temdos/TEMDOS_RESEARCH_PAPER.md) · [Core definitions →](cores/)
+
+---
+
 ## Interactive TUI
 
 `temm1e tui` gives you a Claude Code-level terminal experience — talk to Tem directly from your terminal with rich markdown rendering, syntax-highlighted code blocks, and real-time agent observability.
@@ -583,6 +632,7 @@ temm1e (binary)
 ├─ temm1e-gaze           TEM GAZE — desktop vision control (xcap + enigo), SoM overlay, zoom-refine
 ├─ temm1e-perpetuum      PERPETUUM — perpetual time-aware entity, scheduling, monitors, volition
 ├─ temm1e-anima          TEM ANIMA — emotional intelligence, user profiling, personality system
+├─ temm1e-cores          TEMDOS — specialist sub-agent cores (architecture, code-review, test, debug, web, desktop, research, creative)
 ├─ temm1e-providers      Anthropic + Gemini (native) + OpenAI-compatible (6 providers)
 ├─ temm1e-codex-oauth    ChatGPT Plus/Pro via OAuth PKCE
 ├─ temm1e-tui            Interactive terminal UI (ratatui + syntect)
@@ -623,7 +673,7 @@ temm1e (binary)
 <td align="center"><strong>15 MB</strong><br><sub>Idle RAM</sub></td>
 <td align="center"><strong>31 ms</strong><br><sub>Cold start</sub></td>
 <td align="center"><strong>9.6 MB</strong><br><sub>Binary size</sub></td>
-<td align="center"><strong>2,049</strong><br><sub>Tests</sub></td>
+<td align="center"><strong>2,065</strong><br><sub>Tests</sub></td>
 <td align="center"><strong>8</strong><br><sub>AI Providers</sub></td>
 <td align="center"><strong>15</strong><br><sub>Built-in tools</sub></td>
 <td align="center"><strong>7</strong><br><sub>Channels</sub></td>
@@ -737,7 +787,7 @@ temm1e reset --confirm       Factory reset with backup
 
 ```bash
 cargo check --workspace                                              # Quick check
-cargo test --workspace                                               # 2,049 tests
+cargo test --workspace                                               # 2,065 tests
 cargo clippy --workspace --all-targets --all-features -- -D warnings # 0 warnings
 cargo fmt --all                                                      # Format
 cargo build --release                                                # Release binary
@@ -751,6 +801,8 @@ Requires Rust 1.82+ and Chrome/Chromium (for the browser tool).
 <summary><strong>Release Timeline</strong> — every version from first breath to now</summary>
 
 ```
+2026-04-05  v4.4.0  ●━━━ TemDOS — Tem Delegated Operating Subsystem. Specialist sub-agent cores inspired by GLaDOS personality cores. 8 foundational cores (architecture, code-review, test, debug, web, desktop, research, creative). Cores run as tools in the main agent loop with full tool access, shared budget (Arc<BudgetTracker>), and structural recursion prevention (invoke_core filtered from core tool set). Context isolation: core research stays in core's session, main agent receives only distilled answers. Parallel invocation via existing execute_tools_parallel. Core definitions in .md files (YAML frontmatter + system prompt). Autonomous invocation verified with Gemini 3.1 Pro. A/B tested: 0/3 task completion without cores vs 3/3 with cores, 77% main agent context reduction. 22 crates, 2065 tests.
+                    │
 2026-04-04  v4.3.0  ●━━━ Tem Anima — emotional intelligence, adaptive user profiling, configurable personality. Four-layer EI architecture (perception, self model, user model, communication). LLM-evaluated user profiles every N turns (background, zero latency). Confidence-gated prompt injection (~100-200 anima tokens in the SKULL). Personality centralization (personality.toml + soul.md). Anti-sycophancy structural enforcement. Ethics framework: transparency, user control, minimal inference. 21 crates, 2049 tests.
                     │
 2026-04-04  v4.2.0  ●━━━ Tem Vigil — self-diagnosing bug reporter. Centralized persistent logging (~/.temm1e/logs/, daily rotation, 7-day retention, 100MB budget). Auto bug reporting during Perpetuum Sleep: LLM triage, 3-layer credential scrubbing (regex + path/IP + entropy), GitHub issue creation with dedup. /addkey github for PAT setup, /vigil commands for configuration. Also: consciousness budget fix + Chat turn skip from v4.1.2. 1972 tests.

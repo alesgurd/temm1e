@@ -67,6 +67,7 @@ version = "X.Y.Z"
 | Location | What |
 |----------|------|
 | Line ~7 | Crate count ("X crates plus a root binary") |
+| Workspace structure | Must list all crates in `crates/` |
 
 ### 6. src/main.rs — Check Version-Sensitive Code
 

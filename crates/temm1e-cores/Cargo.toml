@@ -1,0 +1,23 @@
+[package]
+name = "temm1e-cores"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "TemDOS — Tem Delegated Operating Subsystem: specialist cores for TEMM1E"
+
+[dependencies]
+temm1e-core.workspace = true
+temm1e-agent.workspace = true
+tokio.workspace = true
+futures.workspace = true
+tracing.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+uuid.workspace = true
+async-trait.workspace = true
+dirs.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

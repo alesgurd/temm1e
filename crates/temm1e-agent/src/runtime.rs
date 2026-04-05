@@ -73,8 +73,8 @@ pub struct AgentRuntime {
     max_consecutive_failures: usize,
     /// Optional persistent task queue for checkpointing (None = no persistence).
     task_queue: Option<Arc<TaskQueue>>,
-    /// Per-session budget tracker.
-    budget: BudgetTracker,
+    /// Per-session budget tracker (Arc-wrapped for sharing with TemDOS cores).
+    budget: Arc<BudgetTracker>,
     /// Pricing for the current model.
     model_pricing: ModelPricing,
     /// Whether v2 Tem's Mind optimizations are enabled.
@@ -140,7 +140,7 @@ impl AgentRuntime {
             verification_enabled: true,
             max_consecutive_failures: 2,
             task_queue: None,
-            budget: BudgetTracker::new(0.0),
+            budget: Arc::new(BudgetTracker::new(0.0)),
             hive_enabled: false,
             model_pricing,
             v2_optimizations: true,
@@ -214,7 +214,7 @@ impl AgentRuntime {
             verification_enabled: true,
             max_consecutive_failures: 2,
             task_queue: None,
-            budget: BudgetTracker::new(max_spend_usd),
+            budget: Arc::new(BudgetTracker::new(max_spend_usd)),
             hive_enabled: false,
             model_pricing,
             v2_optimizations: true,
@@ -229,6 +229,16 @@ impl AgentRuntime {
             social_turn_count: Arc::new(AtomicU32::new(0)),
             social_evaluating: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    /// Get a shared reference to the budget tracker (for TemDOS core sharing).
+    pub fn budget(&self) -> Arc<BudgetTracker> {
+        self.budget.clone()
+    }
+
+    /// Get the model pricing (for TemDOS core sharing).
+    pub fn model_pricing(&self) -> &ModelPricing {
+        &self.model_pricing
     }
 
     /// Set the shared personality mode (PLAY/WORK). The current mode is

@@ -546,6 +546,41 @@ RULES:\n\
 - Scripts have a 30-second timeout. For long tasks, use async patterns.",
     );
 
+    // ── TemDOS: Specialist cores ──────────────────────────────
+    // Loaded dynamically — only inject if cores are available.
+    // The core listing is injected at runtime from the registry;
+    // this section provides the usage guidelines.
+    prompt.push_str(
+        "\n\n\
+TEMDOS — SPECIALIST CORES:\n\
+You have access to specialist cores via the invoke_core tool. Each core is an \
+independent AI agent with full tool access that runs until completion and returns \
+a detailed answer.\n\n\
+WHEN TO USE CORES:\n\
+- USE a core when a task requires deep, focused analysis that would take many \
+  tool rounds (architecture review, security audit, test generation, debugging).\n\
+- DO NOT use a core for simple tasks you can handle in 1-2 tool calls.\n\
+- INVOKE MULTIPLE cores in parallel when you need independent analyses \
+  (e.g., architecture AND security simultaneously).\n\n\
+HOW CORES WORK:\n\
+- Cores share your budget — they deduct from the same spending pool.\n\
+- Cores have full tool access (file, shell, git, browser, etc.).\n\
+- Cores run in isolation — they have their own context, not yours.\n\
+- Cores CANNOT call other cores — they work alone and report back.\n\
+- Be SPECIFIC in your task description — the core cannot ask follow-up questions.\n\
+- Use the 'context' parameter to pass relevant info: previous findings, \
+  constraints, or pre-read file contents. This reduces the core's cold start.\n\n\
+GOOD INVOCATION:\n\
+  invoke_core(core='architecture', task='Map all files that import from \
+  temm1e-providers and list which types they use. I need the blast radius \
+  of changing CompletionResponse.', context='Adding a cache_hit field')\n\n\
+BAD INVOCATION:\n\
+  invoke_core(core='architecture', task='look at the code')\n\n\
+PARALLEL PATTERN:\n\
+  When you need independent analyses, invoke multiple cores in a single response. \
+  They run concurrently and you receive all results together.",
+    );
+
     prompt
 }
 
@@ -1868,6 +1903,24 @@ async fn main() -> Result<()> {
                 mgr
             };
 
+            // ── TemDOS: Load core registry ──────────────────
+            let core_registry = {
+                let mut registry = temm1e_cores::CoreRegistry::new();
+                let ws_path = dirs::home_dir()
+                    .map(|h| h.join(".temm1e"))
+                    .unwrap_or_default();
+                registry
+                    .load(Some(ws_path.as_path()))
+                    .await
+                    .unwrap_or_else(|e| {
+                        tracing::warn!(error = %e, "Failed to load TemDOS cores");
+                    });
+                if !registry.is_empty() {
+                    tracing::info!(count = registry.len(), "TemDOS cores loaded");
+                }
+                Arc::new(tokio::sync::RwLock::new(registry))
+            };
+
             // Perpetuum state (initialized lazily after provider is ready)
             let perpetuum: Arc<tokio::sync::RwLock<Option<Arc<temm1e_perpetuum::Perpetuum>>>> =
                 Arc::new(tokio::sync::RwLock::new(None));
@@ -1956,6 +2009,27 @@ async fn main() -> Result<()> {
                             Arc::from(temm1e_providers::create_provider(&provider_config)?)
                         }
                     };
+                    // TemDOS: register invoke_core tool now that provider is available
+                    if !core_registry.read().await.is_empty() {
+                        let model_pricing = temm1e_agent::budget::get_pricing(model);
+                        let invoke_core = temm1e_cores::InvokeCoreTool::new(
+                            core_registry.clone(),
+                            provider.clone(),
+                            tools.clone(), // all tools — invoke_core filters itself out
+                            // Note: this is a SEPARATE budget for core tracking.
+                            // The main agent's budget is inside AgentRuntime.
+                            // Both ultimately deduct from the user's wallet via provider calls.
+                            Arc::new(temm1e_agent::budget::BudgetTracker::new(
+                                config.agent.max_spend_usd,
+                            )),
+                            model_pricing,
+                            model.clone(),
+                            config.agent.max_context_tokens,
+                        );
+                        tools.push(Arc::new(invoke_core));
+                        tracing::info!("TemDOS invoke_core tool registered");
+                    }
+
                     let mut runtime = temm1e_agent::AgentRuntime::with_limits(
                         provider.clone(),
                         memory.clone(),
@@ -4969,6 +5043,24 @@ Just type a message to chat with the AI agent.",
                 mgr
             };
 
+            // ── TemDOS: Load core registry (CLI) ──────────────
+            let cli_core_registry = {
+                let mut registry = temm1e_cores::CoreRegistry::new();
+                let ws_path = dirs::home_dir()
+                    .map(|h| h.join(".temm1e"))
+                    .unwrap_or_default();
+                registry
+                    .load(Some(ws_path.as_path()))
+                    .await
+                    .unwrap_or_else(|e| {
+                        tracing::warn!(error = %e, "Failed to load TemDOS cores (CLI)");
+                    });
+                if !registry.is_empty() {
+                    tracing::info!(count = registry.len(), "TemDOS cores loaded (CLI)");
+                }
+                Arc::new(tokio::sync::RwLock::new(registry))
+            };
+
             let base_url = config.provider.base_url.clone();
 
             // ── Build agent (if credentials available) ─────────
@@ -5037,6 +5129,22 @@ Just type a message to chat with the AI agent.",
                     };
                     match provider_result {
                         Ok(provider) => {
+                            // TemDOS: register invoke_core tool for CLI chat
+                            if !cli_core_registry.read().await.is_empty() {
+                                let model_pricing = temm1e_agent::budget::get_pricing(&model);
+                                let invoke_core = temm1e_cores::InvokeCoreTool::new(
+                                    cli_core_registry.clone(),
+                                    provider.clone(),
+                                    tools_template.clone(),
+                                    Arc::new(temm1e_agent::budget::BudgetTracker::new(max_spend)),
+                                    model_pricing,
+                                    model.clone(),
+                                    max_ctx,
+                                );
+                                tools_template.push(Arc::new(invoke_core));
+                                tracing::info!("TemDOS invoke_core tool registered (CLI)");
+                            }
+
                             let system_prompt = Some(build_system_prompt());
                             let consciousness_provider = provider.clone();
                             let mut rt = temm1e_agent::AgentRuntime::with_limits(

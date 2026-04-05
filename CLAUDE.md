@@ -4,7 +4,7 @@
 
 TEMM1E is a cloud-native Rust AI agent runtime. It connects to messaging channels (Telegram, Discord, WhatsApp, Slack, CLI), routes messages through an agent loop that calls AI providers (Anthropic, OpenAI-compatible), executes tools (shell, browser, file ops), and persists conversation history to memory backends (SQLite, Markdown).
 
-The codebase is a Cargo workspace with 21 crates plus a root binary.
+The codebase is a Cargo workspace with 22 crates plus a root binary.
 
 ## Build commands
 
@@ -72,6 +72,7 @@ crates/
   temm1e-gaze        -- Tem Gaze: desktop vision control (xcap + enigo), SoM overlay
   temm1e-perpetuum   -- Perpetuum: perpetual time-aware entity, scheduling, monitors, volition
   temm1e-anima       -- Tem Anima: emotional intelligence, user profiling, personality system
+  temm1e-cores       -- TemDOS: specialist sub-agent cores (architecture, code-review, test, debug, web, desktop, research, creative)
   temm1e-mcp         -- MCP client (stdio + HTTP, 14-server registry)
   temm1e-automation  -- Cron jobs and scheduled tasks
   temm1e-observable  -- OpenTelemetry tracing and metrics
