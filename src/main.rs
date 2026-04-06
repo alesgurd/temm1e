@@ -337,6 +337,7 @@ sk-or-...      \u{2192} OpenRouter\n\n\
 2\u{fe0f}\u{20e3} Explicit (for keys without unique prefix):\n\
 zai:YOUR_KEY\n\
 minimax:YOUR_KEY\n\
+stepfun:YOUR_KEY\n\
 openrouter:YOUR_KEY\n\
 ollama:YOUR_KEY\n\n\
 3\u{fe0f}\u{20e3} Proxy / custom endpoint:\n\
@@ -421,15 +422,16 @@ fn build_system_prompt(personality: &temm1e_anima::personality::PersonalityConfi
     );
     prompt.push_str("- zai (zhipu): glm-4.7-flash, glm-4.7, glm-5, glm-5-code, glm-4.6v\n");
     prompt.push_str("- minimax: MiniMax-M2.5\n");
+    prompt.push_str("- stepfun: step-3.5-flash, step-3\n");
     prompt.push_str("- openai-codex: gpt-5.4 (recommended), gpt-5.3-codex, gpt-5.2-codex (OAuth subscription)\n");
 
     // ── Vision capability ──────────────────────────────────────
     prompt.push_str(
         "\nVISION (IMAGE) SUPPORT:\n\
          Models that can see images: all claude-*, all gpt-4o/gpt-4.1/gpt-5.*, all gemini-*, \
-         grok-3/grok-4, glm-*v* (V-suffix only, e.g. glm-4.6v-flash).\n\
+         grok-3/grok-4, glm-*v* (V-suffix only, e.g. glm-4.6v-flash), step-3.\n\
          Text-only (NO vision): gpt-3.5-turbo, glm-4.7-flash, glm-4.7, glm-5, glm-5-code, \
-         glm-4.5-flash, all MiniMax models.\n\
+         glm-4.5-flash, all MiniMax models, step-3.5-flash.\n\
          If the user sends an image on a text-only model, images are auto-stripped and \
          the user is notified. Suggest switching to a vision model.\n",
     );
