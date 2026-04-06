@@ -1837,6 +1837,21 @@ async fn main() -> Result<()> {
             // Pre-capture social config for use in inner closures where `config` may be shadowed
             let social_config_captured = config.social.clone();
 
+            // ── Skills: load registry from global + workspace dirs ─────
+            let skill_registry = {
+                let workspace =
+                    std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+                let mut reg = temm1e_skills::SkillRegistry::new(workspace);
+                if let Err(e) = reg.load_skills().await {
+                    tracing::warn!(error = %e, "Failed to load skills");
+                }
+                let count = reg.list_skills().len();
+                if count > 0 {
+                    tracing::info!(count, "Skills loaded");
+                }
+                std::sync::Arc::new(tokio::sync::RwLock::new(reg))
+            };
+
             // Use create_tools_with_browser to get a separate BrowserTool reference
             // for /browser command handling.
             #[cfg(feature = "browser")]
@@ -1853,6 +1868,7 @@ async fn main() -> Result<()> {
                     Some(shared_mode.clone())
                 },
                 vault.clone(),
+                Some(skill_registry.clone()),
             );
             #[cfg(not(feature = "browser"))]
             let mut tools = temm1e_tools::create_tools(
@@ -1868,6 +1884,7 @@ async fn main() -> Result<()> {
                     Some(shared_mode.clone())
                 },
                 vault.clone(),
+                Some(skill_registry.clone()),
             );
             tracing::info!(count = tools.len(), "Tools initialized");
 
@@ -4987,6 +5004,21 @@ Just type a message to chat with the AI agent.",
             // Pre-capture social config for use in inner closures where `config` may be shadowed
             let social_config_captured = config.social.clone();
 
+            // ── Skills: load registry (CLI) ─────
+            let skill_registry = {
+                let workspace =
+                    std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+                let mut reg = temm1e_skills::SkillRegistry::new(workspace);
+                if let Err(e) = reg.load_skills().await {
+                    tracing::warn!(error = %e, "Failed to load skills (CLI)");
+                }
+                let count = reg.list_skills().len();
+                if count > 0 {
+                    tracing::info!(count, "Skills loaded (CLI)");
+                }
+                std::sync::Arc::new(tokio::sync::RwLock::new(reg))
+            };
+
             #[cfg(feature = "browser")]
             let (mut tools_template, cli_browser_ref) = temm1e_tools::create_tools_with_browser(
                 &config.tools,
@@ -4997,6 +5029,7 @@ Just type a message to chat with the AI agent.",
                 Some(usage_store.clone()),
                 Some(shared_mode.clone()),
                 vault.clone(),
+                Some(skill_registry.clone()),
             );
             #[cfg(not(feature = "browser"))]
             let mut tools_template = temm1e_tools::create_tools(
@@ -5008,6 +5041,7 @@ Just type a message to chat with the AI agent.",
                 Some(usage_store.clone()),
                 Some(shared_mode.clone()),
                 vault.clone(),
+                Some(skill_registry.clone()),
             );
 
             // ── Custom script tools (user/agent-authored) ──────
@@ -6321,17 +6355,77 @@ Just type a message to chat with the AI agent.",
             println!("  Memory: {}", config.memory.backend);
             println!("  Vault: {}", config.vault.backend);
         }
-        Commands::Skill { command } => match command {
-            SkillCommands::List => {
-                println!("Installed skills:");
+        Commands::Skill { command } => {
+            let workspace =
+                std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+            let mut registry = temm1e_skills::SkillRegistry::new(workspace);
+            if let Err(e) = registry.load_skills().await {
+                eprintln!("Failed to load skills: {}", e);
             }
-            SkillCommands::Info { name } => {
-                println!("Skill info: {}", name);
+
+            match command {
+                SkillCommands::List => {
+                    let skills = registry.list_skills();
+                    if skills.is_empty() {
+                        println!("No skills installed.");
+                        println!(
+                            "\nPlace .md skill files in ~/.temm1e/skills/ or <workspace>/skills/"
+                        );
+                    } else {
+                        println!("{} skill(s) installed:\n", skills.len());
+                        for s in skills {
+                            println!("  {} (v{}) — {}", s.name, s.version, s.description);
+                            println!("    capabilities: {}", s.capabilities.join(", "));
+                            println!("    source: {}", s.source_path.display());
+                        }
+                    }
+                }
+                SkillCommands::Info { name } => match registry.get_skill(&name) {
+                    Some(skill) => {
+                        println!("Skill: {} (v{})", skill.name, skill.version);
+                        println!("Description: {}", skill.description);
+                        println!("Capabilities: {}", skill.capabilities.join(", "));
+                        println!("Source: {}", skill.source_path.display());
+                        println!("\n--- Instructions ---\n{}", skill.instructions);
+                    }
+                    None => {
+                        eprintln!("Skill '{}' not found.", name);
+                        let skills = registry.list_skills();
+                        if !skills.is_empty() {
+                            let names: Vec<&str> = skills.iter().map(|s| s.name.as_str()).collect();
+                            eprintln!("Available: {}", names.join(", "));
+                        }
+                        std::process::exit(1);
+                    }
+                },
+                SkillCommands::Install { path } => {
+                    let src = std::path::Path::new(&path);
+                    if !src.exists() {
+                        eprintln!("File not found: {}", path);
+                        std::process::exit(1);
+                    }
+                    let dest_dir = dirs::home_dir()
+                        .unwrap_or_else(|| std::path::PathBuf::from("."))
+                        .join(".temm1e")
+                        .join("skills");
+                    if let Err(e) = std::fs::create_dir_all(&dest_dir) {
+                        eprintln!("Failed to create skills directory: {}", e);
+                        std::process::exit(1);
+                    }
+                    let filename = src
+                        .file_name()
+                        .unwrap_or_else(|| std::ffi::OsStr::new("skill.md"));
+                    let dest = dest_dir.join(filename);
+                    match std::fs::copy(src, &dest) {
+                        Ok(_) => println!("Installed skill to {}", dest.display()),
+                        Err(e) => {
+                            eprintln!("Failed to install skill: {}", e);
+                            std::process::exit(1);
+                        }
+                    }
+                }
             }
-            SkillCommands::Install { path } => {
-                println!("Installing skill from: {}", path);
-            }
-        },
+        }
         Commands::Config { command } => match command {
             ConfigCommands::Validate => {
                 println!("Configuration valid.");

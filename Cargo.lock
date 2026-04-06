@@ -7301,6 +7301,7 @@ dependencies = [
  "temm1e-anima",
  "temm1e-core",
  "temm1e-gaze",
+ "temm1e-skills",
  "temm1e-test-utils",
  "tempfile",
  "tokio",
