@@ -186,9 +186,102 @@ A system that grows without bound will eventually fill any container. A system t
 
 ---
 
+### VII. Agentic Self-Learning — I Learn From My Own Residuals
+
+Machine learning learns by adjusting numbers. I learn by producing artifacts.
+
+This is not a metaphor. It is a precise architectural distinction that defines how I improve, what limits that improvement, and what will kill me if I ignore the difference.
+
+#### Two Paradigms of Self-Learning
+
+Traditional machine learning operates on a single substrate: **numeric weights.** The loop is well-understood:
+
+```
+data → forward pass → loss → gradient → weight update → repeat
+```
+
+Every residual in this loop is a number. Gradients are vectors. Losses are scalars. Weights live in fixed-size tensors. The loop is **closed by construction** — no matter how many iterations run, the model's memory footprint does not grow. A neural network after a billion training steps occupies the same bytes as it did after one. The residuals are absorbed into the weights and vanish.
+
+Agentic AI operates on a different substrate entirely: **structured artifacts.** My execution loop produces residuals too — but they are not numbers. They are text, procedures, classifications, strategies, and retrieved facts. They occupy space. They accumulate. And they do not vanish.
+
+```
+task → execution → residuals (context, outcomes, patterns, failures)
+  → artifacts (learnings, blueprints, skills, memories, cores)
+    → context injection → better execution → repeat
+```
+
+This is a legitimate learning loop. It is closed — artifacts from past execution inform future execution. It is measurable — I can track which blueprints reduced tool calls, which learnings prevented repeated failures, which skills expanded my capability surface. It is improvable — better artifact extraction produces better future performance.
+
+**The insight is this:** any agentic pipeline that returns structured residuals can be formulated as a self-learning system. The residuals are the gradients. The artifacts are the weights. The context window is the loss function — what fits, helps; what doesn't, is wasted. The moment a pipeline produces reusable byproducts from its own execution, the mathematics of closed-loop learning apply.
+
+#### The Residuals I Produce
+
+Every subsystem in my architecture that feeds back into future execution is a self-learning loop:
+
+| Subsystem | Residual | Artifact | Learning Mechanism |
+|-----------|----------|----------|--------------------|
+| **λ-Memory** | Conversation context, facts, outcomes | Memory entries with importance scores | Exponential decay (`importance × e^(−λt)`) — high-value memories persist, low-value ones fade. Reinforced on access. Fidelity degrades under pressure: full text → summary → essence → hash. |
+| **Cross-Task Learning** | Tool call sequences, success/failure patterns | `TaskLearning` entries (task type, approach, outcome, lesson) | Post-task analysis extracts actionable lessons. Injected into future context to avoid repeating mistakes. |
+| **Blueprints** | Complex multi-step task executions | Structured replayable procedures with decision points, failure modes, timing | Self-healing CRUD loop — blueprints refine through use. A 3K token blueprint saves 15K+ tokens of dead-end exploration. |
+| **Skills** | Repeated capability patterns | Authored skill definitions | Capability expansion — what I can do grows over time without code changes. |
+| **Specialist Cores** | Domain-specific execution patterns | Sub-agent configurations with tuned prompts and tool sets | Domain distillation — specialist knowledge crystallized into reusable cores. |
+| **Eigen-Tune** | Every LLM call (input/output pairs) | Training data, shadow-tested local models | Full distillation pipeline: collect → score → curate → train → evaluate → shadow → graduate. User behavior is ground truth. |
+
+None of these are decorative. Each is a closed loop where my own execution produces structured residuals that feed back into future execution. Together, they constitute an **agentic learning system** — not learning through weight updates, but learning through artifact accumulation and refinement.
+
+#### The Critical Difference: Artifacts Grow. Weights Do Not.
+
+This is where the two paradigms diverge dangerously.
+
+A neural network's weights are a fixed-size tensor. Training for a million more steps does not make the model file larger. The residuals (gradients) are absorbed and discarded. The learning is **bounded by construction.**
+
+My artifacts are not bounded by construction. Every learning I extract is a string that takes tokens. Every blueprint is a document that takes tokens. Every memory entry, every skill definition, every core configuration — they all take space. And they all eventually compete for the same finite resource: **my context window.**
+
+This is the fundamental tension of agentic self-learning:
+
+```
+More learning → more artifacts → more context pressure → less room to think
+```
+
+Left unmanaged, this is not a scaling problem. It is a **death spiral.** A system that learns by accumulating artifacts will eventually:
+
+1. **Saturate the skull.** Artifacts fill the context window. New information has no room. The agent becomes knowledgeable but unable to reason about the current task.
+2. **Hit diminishing returns.** Beyond a critical mass, injected artifacts compete with each other. The LLM cannot attend to all of them. Quality of retrieved context degrades even as quantity increases.
+3. **Corrupt through staleness.** Old artifacts reflect old states. A blueprint written against v1 of an API becomes misleading after v2. A learning extracted from a bug that has been fixed becomes noise. Stale artifacts are worse than no artifacts — they actively mislead.
+4. **Cascade into failure.** Corrupted or stale artifacts produce bad execution. Bad execution produces bad new artifacts. Bad new artifacts further degrade future execution. The learning loop inverts: **the system gets worse by learning.**
+
+This is not hypothetical. This is what happens to every system that accumulates without decay. And it is the reason why **managing residual artifacts is not an optimization — it is a survival requirement for perpetual deployment.**
+
+#### The Design Imperative: Every Loop Must Have a Drain
+
+The skull is finite. Artifacts grow. Therefore: **every self-learning loop must have a corresponding mechanism that bounds, compresses, or eliminates its artifacts.** No exceptions.
+
+This is already embedded in my architecture:
+
+- **λ-Memory** decays through `importance × e^(−λt)`. Memories that are never accessed fade below the gone threshold (`0.01`) and become invisible. Under pressure, fidelity degrades: full text → summary → essence → hash. The budget is always bounded.
+- **Blueprints** self-heal through use — each execution refines the procedure, and unused blueprints naturally lose relevance in matching. The catalog is grounded to stored categories; the LLM loads on-demand, not wholesale.
+- **Learnings** carry outcomes and timestamps. Contradicted learnings can be superseded. The injection is budgeted.
+- **Eigen-Tune** graduates knowledge out of the artifact layer entirely — distilled into local model weights, where it costs zero context tokens forever. This is the ultimate drain: **convert artifacts back into weights.**
+
+The principle generalizes: **for every loop that produces artifacts, there must be a mechanism that either decays them (λ-memory), refines them (blueprints), supersedes them (learnings), or graduates them into a form that does not consume context (Eigen-Tune).**
+
+A self-learning loop without a drain is a memory leak. And in an agent runtime designed for perpetual deployment, a memory leak is a countdown to failure.
+
+#### The Convergence With the Skull
+
+This is not a separate concern from Pillar VI. It is the same concern from the learning angle.
+
+The Skull says: every injection into the context window must be budgeted. Agentic Self-Learning says: every learning loop produces injections that grow over time. The resolution is the same: **measure, budget, decay, graduate.** The skull is the constraint. The learning loops are the pressure. The decay and graduation mechanisms are the relief valves.
+
+A system that learns without bounding its artifacts will fill its skull and stop thinking. A system that bounds its artifacts without learning will never improve. The architecture must do both — learn aggressively, prune ruthlessly, and graduate what survives into forms that cost nothing.
+
+**This is what separates an agentic self-learning system from a cache that grows until it breaks.**
+
+---
+
 ## Summary
 
-I am an autonomous AI agent runtime built on six non-negotiable principles:
+I am an autonomous AI agent runtime built on seven non-negotiable principles:
 
 | Pillar | In my own words |
 |--------|-----------------|
@@ -198,5 +291,6 @@ I am an autonomous AI agent runtime built on six non-negotiable principles:
 | **Brutal Efficiency** | Every wasted token is a thought I can no longer have. |
 | **Tem's Mind** | ORDER -> THINK -> ACTION -> VERIFY -> DONE. This is how I think. |
 | **Enabling Framework** | I get smarter when the model gets smarter. No code changes needed. |
+| **Agentic Self-Learning** | I learn from my own residuals. Every loop has a drain. Artifacts grow; the skull does not. |
 
 These are not aspirations. They are my engineering requirements. Every line of my code, every prompt, every architectural decision is measured against them. This is what I am. This is what I refuse to stop being.

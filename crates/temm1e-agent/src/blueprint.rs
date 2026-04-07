@@ -47,6 +47,10 @@ pub struct Blueprint {
     /// Pre-computed token cost of the full body (for budget enforcement).
     /// Computed at authoring/refinement time via `estimate_tokens()`.
     pub token_count: usize,
+
+    /// Last time this blueprint was executed (for staleness detection).
+    #[serde(default)]
+    pub last_executed_at: Option<DateTime<Utc>>,
 }
 
 impl Blueprint {
@@ -57,6 +61,147 @@ impl Blueprint {
         }
         self.times_succeeded as f64 / self.times_executed as f64
     }
+}
+
+// ── Blueprint Fitness & GC ──────────────────────────────────────────
+
+/// Wilson score lower bound (99% confidence).
+/// Conservative estimate of success rate with low sample sizes.
+fn wilson_lower_99(successes: u32, total: u32) -> f64 {
+    if total == 0 {
+        return 0.0;
+    }
+    let n = total as f64;
+    let p = successes as f64 / n;
+    let z = 2.576; // 99% CI
+    let z2 = z * z;
+    let denom = n + z2;
+    let center = (n * p + z2 / 2.0) / denom;
+    let margin = z * ((n * p * (1.0 - p) + z2 / 4.0) / (denom * denom)).sqrt();
+    (center - margin).max(0.0)
+}
+
+/// Compute blueprint fitness: F = S² × R × U
+///
+/// - S = Wilson lower bound of success rate (99% CI), squared for selection pressure
+/// - R = exp(-0.005 × days_since_last_executed), half-life ≈ 139 days
+/// - U = 1.0 + 0.5 × ln(1 + times_executed)
+pub fn compute_fitness(bp: &Blueprint, now: DateTime<Utc>) -> f64 {
+    let s = if bp.times_executed > 0 {
+        wilson_lower_99(bp.times_succeeded, bp.times_executed)
+    } else {
+        0.5 // uninformed prior for never-executed
+    };
+    let q = s * s;
+
+    let last_exec = bp.last_executed_at.unwrap_or(bp.updated);
+    let days = (now - last_exec).num_seconds().max(0) as f64 / 86400.0;
+    let r = (-0.005 * days).exp();
+
+    let u = 1.0 + 0.5 * (1.0 + bp.times_executed as f64).ln();
+
+    q * r * u
+}
+
+/// Garbage collect low-fitness and proven-bad blueprints.
+/// Returns the number of blueprints deleted.
+pub async fn blueprint_gc(memory: &dyn Memory) -> usize {
+    let now = Utc::now();
+    let opts = SearchOpts {
+        limit: 500,
+        entry_type_filter: Some(temm1e_core::MemoryEntryType::Blueprint),
+        ..Default::default()
+    };
+
+    let entries = match memory.search("", opts).await {
+        Ok(e) => e,
+        Err(e) => {
+            warn!(error = %e, "Failed to fetch blueprints for GC");
+            return 0;
+        }
+    };
+
+    let mut pruned = 0;
+
+    for entry in &entries {
+        let bp = match parse_blueprint_with_metadata(entry) {
+            Some(bp) => bp,
+            None => continue,
+        };
+
+        let fitness = compute_fitness(&bp, now);
+
+        let should_delete = fitness < 0.005;
+        let proven_bad =
+            bp.times_executed >= 5 && wilson_lower_99(bp.times_succeeded, bp.times_executed) < 0.20;
+
+        if should_delete || proven_bad {
+            if let Err(e) = memory.delete(&entry.id).await {
+                warn!(id = %entry.id, error = %e, "Failed to delete blueprint during GC");
+            } else {
+                info!(
+                    id = %entry.id,
+                    name = %bp.name,
+                    fitness = fitness,
+                    success_rate = bp.success_rate(),
+                    "Blueprint GC: deleted"
+                );
+                pruned += 1;
+            }
+        }
+    }
+
+    if pruned > 0 {
+        info!(
+            pruned = pruned,
+            total = entries.len(),
+            "Blueprint GC complete"
+        );
+    }
+    pruned
+}
+
+/// Parse a blueprint from a MemoryEntry, restoring metadata fields.
+fn parse_blueprint_with_metadata(entry: &temm1e_core::MemoryEntry) -> Option<Blueprint> {
+    let mut bp = match parse_blueprint(&entry.content) {
+        Ok(bp) => bp,
+        Err(_) => return None,
+    };
+
+    if let Some(v) = entry.metadata.get("version").and_then(|v| v.as_u64()) {
+        bp.version = v as u32;
+    }
+    if let Some(v) = entry
+        .metadata
+        .get("times_executed")
+        .and_then(|v| v.as_u64())
+    {
+        bp.times_executed = v as u32;
+    }
+    if let Some(v) = entry
+        .metadata
+        .get("times_succeeded")
+        .and_then(|v| v.as_u64())
+    {
+        bp.times_succeeded = v as u32;
+    }
+    if let Some(v) = entry.metadata.get("times_failed").and_then(|v| v.as_u64()) {
+        bp.times_failed = v as u32;
+    }
+    if let Some(v) = entry.metadata.get("token_count").and_then(|v| v.as_u64()) {
+        bp.token_count = v as usize;
+    }
+    if let Some(v) = entry
+        .metadata
+        .get("last_executed_at")
+        .and_then(|v| v.as_str())
+    {
+        bp.last_executed_at = chrono::DateTime::parse_from_rfc3339(v)
+            .ok()
+            .map(|dt| dt.with_timezone(&Utc));
+    }
+
+    Some(bp)
 }
 
 /// Execution metadata collected during a task for blueprint authoring/refinement.
@@ -308,6 +453,7 @@ pub fn parse_blueprint(raw: &str) -> Result<Blueprint, String> {
         owner_user_id: String::new(),
         body,
         token_count,
+        last_executed_at: None,
     })
 }
 
@@ -1001,6 +1147,7 @@ mod tests {
             owner_user_id: "user-123".to_string(),
             body: "## Objective\nDeploy app to production.\n\n## Phases\n### Phase 1: Build\n**Steps**:\n1. Run docker build\n2. Push to registry".to_string(),
             token_count: 30, // approximate for test body
+            last_executed_at: None,
         }
     }
 

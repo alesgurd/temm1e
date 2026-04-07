@@ -34,6 +34,10 @@ pub struct LambdaMemoryEntry {
     pub memory_type: LambdaMemoryType,
     /// Session that created this memory.
     pub session_id: String,
+    /// Additive importance boost from recalls (+0.3 per recall, capped at 2.0).
+    /// GC applies -0.1 penalty for entries with no access since last sweep.
+    #[serde(default)]
+    pub recall_boost: f32,
 }
 
 /// Classification of λ-memory entries.
@@ -158,5 +162,15 @@ pub trait Memory: Send + Sync {
     /// Garbage collect expired λ-memories. Returns count of deleted entries.
     async fn lambda_gc(&self, _now_epoch: u64, _max_age_secs: u64) -> Result<usize, Temm1eError> {
         Ok(0)
+    }
+
+    /// Update a λ-memory entry in place (for dedup merge).
+    async fn lambda_update_entry(&self, _entry: &LambdaMemoryEntry) -> Result<(), Temm1eError> {
+        Ok(())
+    }
+
+    /// Delete a λ-memory entry by hash.
+    async fn lambda_delete(&self, _hash: &str) -> Result<(), Temm1eError> {
+        Ok(())
     }
 }

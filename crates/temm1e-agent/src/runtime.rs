@@ -1347,6 +1347,7 @@ impl AgentRuntime {
                         tags: parsed.tags,
                         memory_type: temm1e_core::LambdaMemoryType::Conversation,
                         session_id: session.session_id.clone(),
+                        recall_boost: 0.0,
                     };
 
                     if let Err(e) = self.memory.lambda_store(entry).await {
@@ -1356,9 +1357,10 @@ impl AgentRuntime {
                     }
                 }
 
-                // Strip <memory> blocks from text before user sees them
+                // Strip <memory> and <learning> blocks from text before user sees them
                 for part in &mut text_parts {
                     *part = crate::lambda_memory::strip_memory_blocks(part);
+                    *part = crate::learning::strip_learning_blocks(part);
                 }
             }
 
@@ -1401,14 +1403,30 @@ impl AgentRuntime {
                     });
                 }
 
-                // ── Cross-Task Learning ──────────────────────────────
-                // V2: Skip learning for trivial/simple tasks (use_learn=false)
+                // ── Cross-Task Learning (V3: LLM-powered extraction) ─
+                // Primary path: parse <learning> blocks emitted by the LLM
+                // in the final response.  Fallback: legacy rule-based extraction
+                // if the LLM did not emit a block (e.g. trivial task, short
+                // conversation where the instruction was not in the prompt).
                 let should_learn = execution_profile.as_ref().is_none_or(|p| p.use_learn);
-                let learnings = if should_learn {
-                    learning::extract_learnings(&session.history)
+                let learnings: Vec<learning::TaskLearning> = if should_learn
+                    && learning::had_tool_use(&session.history)
+                {
+                    let tools_used = learning::collect_tools_used(&session.history);
+
+                    // Try LLM-parsed learning first
+                    let learning_opt = learning::parse_learning_block(&reply_text)
+                        .map(|parsed| learning::learning_from_parsed(parsed, tools_used.clone()));
+
+                    // Fallback to legacy if LLM didn't emit a <learning> block
+                    match learning_opt {
+                        Some(l) => vec![l],
+                        None => learning::extract_learnings_legacy(&session.history),
+                    }
                 } else {
                     Vec::new()
                 };
+
                 for l in &learnings {
                     let learning_json = serde_json::to_string(l).unwrap_or_default();
                     let entry = temm1e_core::MemoryEntry {
@@ -1418,6 +1436,8 @@ impl AgentRuntime {
                             "type": "learning",
                             "task_type": l.task_type,
                             "outcome": format!("{:?}", l.outcome),
+                            "quality_alpha": l.quality_alpha,
+                            "quality_beta": l.quality_beta,
                         }),
                         timestamp: chrono::Utc::now(),
                         session_id: Some(session.session_id.clone()),
@@ -1429,7 +1449,8 @@ impl AgentRuntime {
                         debug!(
                             task_type = %l.task_type,
                             outcome = ?l.outcome,
-                            "Persisted task learning"
+                            quality = l.quality_alpha / (l.quality_alpha + l.quality_beta),
+                            "Persisted task learning (V3)"
                         );
                     }
                 }

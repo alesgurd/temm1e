@@ -83,6 +83,14 @@ impl SqliteMemory {
         .await
         .map_err(|e| Temm1eError::Memory(format!("Failed to create lambda_memories: {e}")))?;
 
+        // Migration: add recall_boost column (v4.6.0 self-learning enhancement).
+        // ALTER TABLE ADD COLUMN is a no-op if column already exists (safe to re-run).
+        let _ = sqlx::query(
+            "ALTER TABLE lambda_memories ADD COLUMN recall_boost REAL NOT NULL DEFAULT 0.0",
+        )
+        .execute(&self.pool)
+        .await;
+
         sqlx::query("CREATE INDEX IF NOT EXISTS idx_lm_importance ON lambda_memories(importance)")
             .execute(&self.pool)
             .await
@@ -319,8 +327,8 @@ impl Memory for SqliteMemory {
         sqlx::query(
             "INSERT OR REPLACE INTO lambda_memories \
              (hash, created_at, last_accessed, access_count, importance, explicit_save, \
-              full_text, summary_text, essence_text, tags, memory_type, session_id) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+              full_text, summary_text, essence_text, tags, memory_type, session_id, recall_boost) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&entry.hash)
         .bind(entry.created_at as i64)
@@ -334,6 +342,7 @@ impl Memory for SqliteMemory {
         .bind(&tags_json)
         .bind(memory_type)
         .bind(&entry.session_id)
+        .bind(entry.recall_boost)
         .execute(&self.pool)
         .await
         .map_err(|e| Temm1eError::Memory(format!("lambda_store failed: {e}")))?;
@@ -384,7 +393,7 @@ impl Memory for SqliteMemory {
         let rows: Vec<LambdaMemoryRow> = sqlx::query_as(
             "SELECT hash, created_at, last_accessed, access_count, importance, \
              explicit_save, full_text, summary_text, essence_text, tags, \
-             memory_type, session_id \
+             memory_type, session_id, recall_boost \
              FROM lambda_memories ORDER BY importance DESC LIMIT ?",
         )
         .bind(limit as i64)
@@ -403,7 +412,7 @@ impl Memory for SqliteMemory {
         let row: Option<LambdaMemoryRow> = sqlx::query_as(
             "SELECT hash, created_at, last_accessed, access_count, importance, \
              explicit_save, full_text, summary_text, essence_text, tags, \
-             memory_type, session_id \
+             memory_type, session_id, recall_boost \
              FROM lambda_memories WHERE hash LIKE ? LIMIT 1",
         )
         .bind(&pattern)
@@ -421,7 +430,9 @@ impl Memory for SqliteMemory {
             .as_secs() as i64;
 
         sqlx::query(
-            "UPDATE lambda_memories SET last_accessed = ?, access_count = access_count + 1 \
+            "UPDATE lambda_memories \
+             SET last_accessed = ?, access_count = access_count + 1, \
+                 recall_boost = MIN(recall_boost + 0.3, 2.0) \
              WHERE hash = ?",
         )
         .bind(now)
@@ -430,7 +441,7 @@ impl Memory for SqliteMemory {
         .await
         .map_err(|e| Temm1eError::Memory(format!("lambda_touch: {e}")))?;
 
-        debug!(hash = %hash, "Touched λ-memory (reheated)");
+        debug!(hash = %hash, "Touched λ-memory (reheated + recall_boost)");
         Ok(())
     }
 
@@ -474,6 +485,18 @@ impl Memory for SqliteMemory {
 
     async fn lambda_gc(&self, now_epoch: u64, max_age_secs: u64) -> Result<usize, Temm1eError> {
         let cutoff = (now_epoch.saturating_sub(max_age_secs)) as i64;
+
+        // Weaken recall_boost for entries not accessed since cutoff (weak negative evidence).
+        // Only affects entries that HAVE boost — entries with boost=0 are untouched.
+        let _ = sqlx::query(
+            "UPDATE lambda_memories \
+             SET recall_boost = MAX(recall_boost - 0.1, 0.0) \
+             WHERE explicit_save = 0 AND recall_boost > 0.0 AND last_accessed < ?",
+        )
+        .bind(cutoff)
+        .execute(&self.pool)
+        .await;
+
         let result = sqlx::query(
             "DELETE FROM lambda_memories \
              WHERE explicit_save = 0 AND last_accessed < ? AND importance < 3.0",
@@ -488,6 +511,39 @@ impl Memory for SqliteMemory {
             info!(deleted = count, "λ-Memory garbage collection");
         }
         Ok(count)
+    }
+
+    async fn lambda_update_entry(&self, entry: &LambdaMemoryEntry) -> Result<(), Temm1eError> {
+        let tags_json = serde_json::to_string(&entry.tags).unwrap_or_else(|_| "[]".to_string());
+        sqlx::query(
+            "UPDATE lambda_memories SET \
+             created_at = ?, last_accessed = ?, access_count = ?, \
+             importance = ?, recall_boost = ?, \
+             explicit_save = ?, tags = ? \
+             WHERE hash = ?",
+        )
+        .bind(entry.created_at as i64)
+        .bind(entry.last_accessed as i64)
+        .bind(entry.access_count as i32)
+        .bind(entry.importance)
+        .bind(entry.recall_boost)
+        .bind(entry.explicit_save as i32)
+        .bind(&tags_json)
+        .bind(&entry.hash)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| Temm1eError::Memory(format!("lambda_update_entry: {e}")))?;
+        Ok(())
+    }
+
+    async fn lambda_delete(&self, hash: &str) -> Result<(), Temm1eError> {
+        sqlx::query("DELETE FROM lambda_memories WHERE hash = ?")
+            .bind(hash)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| Temm1eError::Memory(format!("lambda_delete: {e}")))?;
+        debug!(hash = %hash, "Deleted λ-memory entry");
+        Ok(())
     }
 }
 
@@ -551,6 +607,7 @@ struct LambdaMemoryRow {
     tags: String,
     memory_type: String,
     session_id: String,
+    recall_boost: f32,
 }
 
 fn lambda_row_to_entry(row: LambdaMemoryRow) -> LambdaMemoryEntry {
@@ -573,6 +630,7 @@ fn lambda_row_to_entry(row: LambdaMemoryRow) -> LambdaMemoryEntry {
         tags,
         memory_type,
         session_id: row.session_id,
+        recall_boost: row.recall_boost,
     }
 }
 

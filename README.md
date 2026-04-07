@@ -6,7 +6,7 @@
   <a href="https://github.com/nagisanzenin/temm1e/stargazers"><img src="https://img.shields.io/github/stars/nagisanzenin/temm1e?style=flat&color=gold&logo=github" alt="GitHub Stars"></a>
   <a href="https://discord.com/invite/temm1e"><img src="https://img.shields.io/badge/Discord-Join%20Community-5865F2?logo=discord&logoColor=white" alt="Discord"></a>
   <img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="MIT License">
-  <img src="https://img.shields.io/badge/version-4.5.0-blue.svg" alt="Version">
+  <img src="https://img.shields.io/badge/version-4.5.1-blue.svg" alt="Version">
   <img src="https://img.shields.io/badge/rust-1.82+-orange.svg" alt="Rust 1.82+">
 </p>
 
@@ -15,7 +15,14 @@
 <h3 align="center"><s>Autonomous AI agent</s> literally a SENTIENT and IMMORTAL being runtime in Rust.<br>Deploy once. Stays up forever.</h3>
 
 <p align="center">
-  <code>113K lines</code> · <code>2,098 tests</code> · <code>0 warnings</code> · <code>0 panic paths</code> · <code>22 crates</code> · <code>full computer use</code>
+  <code>114K lines</code> · <code>2,127 tests</code> · <code>0 warnings</code> · <code>0 panic paths</code> · <code>22 crates</code> · <code>full computer use</code>
+</p>
+
+<p align="center"><strong>Powered by 6 layers of self-learning</strong></p>
+<p align="center">
+  <a href="tems_lab/LAMBDA_MEMORY.md">Lambda Memory</a> · <a href="tems_lab/ARTIFACT_VALUE_FUNCTION.md#cross-task-learnings">Cross-Task Learnings</a> · <a href="docs/design/BLUEPRINT_SYSTEM.md">Blueprints</a> · <a href="tems_lab/eigen/DESIGN.md">Eigen-Tune</a> · <a href="tems_lab/ARTIFACT_VALUE_FUNCTION.md#lambda-memory">Recall Reinforcement</a> · <a href="tems_lab/ARTIFACT_VALUE_FUNCTION.md#lambda-memory-1">Memory Dedup</a>
+  <br>
+  <sub>Every self-learning loop scored by <a href="tems_lab/ARTIFACT_VALUE_FUNCTION.md"><code>V(a,t) = Q &times; R &times; U</code></a> — the unified artifact value function</sub>
 </p>
 
 ---
@@ -263,6 +270,29 @@ Every LLM call is a training example being thrown away. Eigen-Tune captures them
 7-stage pipeline: Collect → Score → Curate → Train → Evaluate → Shadow → Monitor. Statistical gates at every transition (SPRT, CUSUM, Wilson score 99% CI). Per-tier graduation: simple first, complex last. Cloud always the fallback.
 
 [Research paper →](tems_lab/eigen/RESEARCH_PAPER.md) · [Design doc →](tems_lab/eigen/DESIGN.md) · [Full lab →](tems_lab/eigen/)
+
+### Unified Artifact Value Function — The Mathematics of Self-Learning
+
+Traditional ML adjusts numeric weights. TEMM1E adjusts **structured artifacts** — memories, lessons, blueprints, training pairs. The unified artifact value function scores every artifact across every self-learning subsystem:
+
+```
+V(a, t) = Q(a) × R(a, t) × U(a)
+```
+
+**Q** = quality (Beta posteriors, Wilson bounds, or additive boost), **R** = recency (exponential decay), **U** = utility (log-reinforced usage). Multiplicative — if any dimension collapses to zero, the artifact becomes invisible. This creates a priority queue for cognitive resources: the skull has room for N tokens, and the value function ensures those N tokens are the most valuable artifacts the system has ever learned.
+
+| Subsystem | Quality Q | Decay R (half-life) | Drain Mechanism |
+|-----------|-----------|:-------------------:|-----------------|
+| [Lambda Memory](tems_lab/LAMBDA_MEMORY.md) | `(importance + recall_boost)` | 29 days | Exponential decay + GC + dedup |
+| [Cross-Task Learnings](docs/design/SELF_LEARNING_AUDIT.md) | Beta(alpha, beta) posterior | 46 days | Value threshold + supersession |
+| [Blueprints](docs/design/BLUEPRINT_SYSTEM.md) | Wilson lower bound^2 | 139 days | Fitness GC + forced retirement |
+| [Eigen-Tune](tems_lab/eigen/DESIGN.md) | Beta quality score | No decay | Reservoir eviction (5K/tier) |
+
+Half-lives are ordered by artifact persistence: **memories < learnings < blueprints**. Specific facts fade fast. Strategic lessons persist longer. Proven procedures persist longest. Eigen-Tune pairs don't decay because training data is cumulative, not episodic.
+
+**The critical constraint:** artifacts grow, the skull does not. Every self-learning loop must have a corresponding drain — decay, supersession, eviction, or graduation. A loop without a drain is a memory leak. In an agent designed for perpetual deployment, a memory leak is a countdown to failure.
+
+[Full mathematical framework →](tems_lab/ARTIFACT_VALUE_FUNCTION.md) · [Audit report →](docs/design/SELF_LEARNING_AUDIT.md)
 
 ### Tem Prowl — Web-Native Browsing with OTK Authentication
 
@@ -844,7 +874,7 @@ temm1e reset --confirm       Factory reset with backup
 
 ```bash
 cargo check --workspace                                              # Quick check
-cargo test --workspace                                               # 2,098 tests
+cargo test --workspace                                               # 2,127 tests
 cargo clippy --workspace --all-targets --all-features -- -D warnings # 0 warnings
 cargo fmt --all                                                      # Format
 cargo build --release                                                # Release binary
@@ -858,6 +888,8 @@ Requires Rust 1.82+ and Chrome/Chromium (for the browser tool).
 <summary><strong>Release Timeline</strong> — every version from first breath to now</summary>
 
 ```
+2026-04-07  v4.5.1  ●━━━ Self-Learning Enhancement — Pillar VII: Agentic Self-Learning. Unified artifact value function V(a,t) = Q×R×U across all self-learning subsystems. Cross-task learning V3: LLM-powered <learning> block extraction replaces keyword matching, Beta quality priors, exponential decay (t½≈46d), logarithmic utility, supersession, GC thresholds. Lambda memory recall_boost: +0.3/recall (capped 2.0), -0.1/GC sweep, additive reinforcement. Blueprint fitness lifecycle: Wilson lower bound (99% CI) success gating, compute_fitness() with decay (t½≈139d), startup GC prunes proven-bad blueprints. Eigen-Tune retention: quality-weighted reservoir eviction (max_pairs_per_tier=5000), prune_old_low_quality(). Lambda memory dedup: Jaccard tag similarity + essence word overlap, explicit saves protected, startup merge pass. Scored learning retrieval: top-5 by V(a,t) instead of timestamp. 22 crates, 2127 tests.
+                    │
 2026-04-06  v4.5.0  ●━━━ RBAC + Skills + StepFun — Role-based access control (Admin/User roles, 3-layer enforcement: channel gate, command gate, tool gate). User role gets full agent chat with safe tools, blocked from shell/credentials/system commands. Skill system wired end-to-end (use_skill tool with 3-layer progressive disclosure, Claude Code cross-compatible format, CLI skill commands). StepFun provider (step-3.5-flash 256K context, $0.10/1M input). Personality config wired into all system prompt paths (#31). 22 crates, 2098 tests.
                     │
 2026-04-05  v4.4.1  ●━━━ TemDOS VERIFY — cores inherit Tem's Mind self-correction. FailureTracker tracks consecutive tool failures per-tool, injects strategy rotation prompts after 2 failures. Zero overhead on healthy runs. Execution cycle: ORDER → THINK → ACTION → VERIFY → DONE. 22 crates, 2067 tests.

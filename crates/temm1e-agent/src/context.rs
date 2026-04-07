@@ -342,27 +342,40 @@ pub async fn build_context(
             }
         }
 
-        // Legacy Category 6: learnings
+        // Category 6: learnings — scored by V(a,t) = Q × R × U
         if !query.is_empty() {
             let learning_budget = ((budget as f32) * LEARNING_BUDGET_FRACTION) as usize;
             let remaining_for_learnings = available_after_fixed_and_recent
                 .saturating_sub(memory_tokens_used + knowledge_tokens_used);
             let learning_budget = learning_budget.min(remaining_for_learnings);
 
+            // Fetch more candidates than needed, then score and take top 5
             let learning_opts = SearchOpts {
-                limit: 5,
+                limit: 50,
                 session_filter: None,
                 ..Default::default()
             };
 
             if let Ok(entries) = memory.search("learning:", learning_opts).await {
-                let learnings: Vec<learning::TaskLearning> = entries
+                let now = chrono::Utc::now();
+                let mut scored: Vec<(f64, learning::TaskLearning)> = entries
                     .iter()
                     .filter_map(|e| serde_json::from_str(&e.content).ok())
+                    .map(|l: learning::TaskLearning| {
+                        let v = learning::learning_value(&l, now);
+                        (v, l)
+                    })
+                    .filter(|(v, _)| *v >= 0.05) // GONE_THRESHOLD
                     .collect();
 
-                if !learnings.is_empty() {
-                    let formatted = learning::format_learnings_context(&learnings);
+                scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+                scored.truncate(5);
+
+                let top_learnings: Vec<learning::TaskLearning> =
+                    scored.into_iter().map(|(_, l)| l).collect();
+
+                if !top_learnings.is_empty() {
+                    let formatted = learning::format_learnings_context(&top_learnings);
                     let tokens = estimate_tokens(&formatted);
                     if tokens <= learning_budget && !formatted.is_empty() {
                         lambda_messages.push(ChatMessage {

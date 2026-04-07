@@ -416,7 +416,17 @@ impl<'a> SystemPromptBuilder<'a> {
                 "tags: (up to 5, comma-separated)\n",
                 "</memory>\n",
                 "MUST emit when user says remember/important/critical/always/never or makes a decision.\n",
-                "SKIP only for pure questions, greetings, and farewells."
+                "SKIP only for pure questions, greetings, and farewells.\n\n",
+                "Cross-Task Learning — when completing a task that used tools and produced ",
+                "a reusable insight, append a <learning> block:\n",
+                "<learning>\n",
+                "task_type: (semantic category, e.g. deployment, data-pipeline, browser-automation)\n",
+                "outcome: (success | failure | partial)\n",
+                "lesson: (one actionable sentence: what to do or what to avoid next time)\n",
+                "confidence: (0.0-1.0: how generalizable is this lesson to future similar tasks?)\n",
+                "</learning>\n",
+                "Emit ONLY when the task involved tool use AND produced a non-obvious insight.\n",
+                "SKIP for trivial tasks, obvious outcomes, or when no actionable lesson exists."
             )
             .to_string(),
         }
