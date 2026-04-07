@@ -1627,6 +1627,46 @@ async fn main() -> Result<()> {
             );
             tracing::info!(backend = %config.memory.backend, "Memory initialized");
 
+            // ── Self-learning maintenance (startup GC) ────────────
+            {
+                let gc_count = temm1e_agent::blueprint::blueprint_gc(&*memory).await;
+                if gc_count > 0 {
+                    tracing::info!(pruned = gc_count, "Blueprint GC completed at startup");
+                }
+
+                // Lambda memory dedup: merge near-duplicate entries before GC
+                let lambda_config = &config.memory.lambda;
+                if lambda_config.enabled {
+                    if let Ok(candidates) = memory
+                        .lambda_query_candidates(lambda_config.candidate_limit)
+                        .await
+                    {
+                        let merges = temm1e_agent::lambda_memory::dedup_candidates(&candidates);
+                        let mut merged_count = 0usize;
+                        for (keep_idx, absorb_idx) in &merges {
+                            let merged = temm1e_agent::lambda_memory::merge_entries(
+                                &candidates[*keep_idx],
+                                &candidates[*absorb_idx],
+                            );
+                            if memory.lambda_update_entry(&merged).await.is_ok()
+                                && memory
+                                    .lambda_delete(&candidates[*absorb_idx].hash)
+                                    .await
+                                    .is_ok()
+                            {
+                                merged_count += 1;
+                            }
+                        }
+                        if merged_count > 0 {
+                            tracing::info!(
+                                merged = merged_count,
+                                "λ-Memory dedup completed at startup"
+                            );
+                        }
+                    }
+                }
+            }
+
             // ── Messaging channels ────────────────────────────────
             let mut channels: Vec<Arc<dyn temm1e_core::Channel>> = Vec::new();
             let mut channel_map: HashMap<String, Arc<dyn temm1e_core::Channel>> = HashMap::new();

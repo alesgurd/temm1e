@@ -182,6 +182,17 @@ pub struct EigenTuneConfig {
     /// Directory for storing training artifacts (datasets, checkpoints).
     #[serde(default = "default_artifacts_dir")]
     pub artifacts_dir: String,
+
+    // ── Retention policy ───────────────────────────────────────────
+    /// Maximum training pairs retained per complexity tier.
+    /// When exceeded, lowest-quality pairs are evicted.
+    #[serde(default = "default_max_pairs_per_tier")]
+    pub max_pairs_per_tier: i64,
+
+    /// Pairs older than this (days) AND below quality 0.5 are pruned
+    /// regardless of reservoir position.
+    #[serde(default = "default_retention_days")]
+    pub retention_days: i64,
 }
 
 // ── Default value functions ─────────────────────────────────────────
@@ -291,6 +302,12 @@ fn default_train_schedule() -> String {
 fn default_artifacts_dir() -> String {
     "~/.temm1e/eigentune".to_string()
 }
+fn default_max_pairs_per_tier() -> i64 {
+    5000
+}
+fn default_retention_days() -> i64 {
+    180
+}
 
 impl Default for EigenTuneConfig {
     fn default() -> Self {
@@ -335,6 +352,8 @@ impl Default for EigenTuneConfig {
             teacher_model: default_teacher_model(),
             train_schedule: default_train_schedule(),
             artifacts_dir: default_artifacts_dir(),
+            max_pairs_per_tier: default_max_pairs_per_tier(),
+            retention_days: default_retention_days(),
         }
     }
 }

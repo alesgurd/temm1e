@@ -31,11 +31,22 @@ pub struct EigenTunePairData {
 pub struct EigenTuneCollector {
     store: Arc<EigenTuneStore>,
     enabled: bool,
+    max_pairs_per_tier: i64,
 }
 
 impl EigenTuneCollector {
     pub fn new(store: Arc<EigenTuneStore>, enabled: bool) -> Self {
-        Self { store, enabled }
+        Self {
+            store,
+            enabled,
+            max_pairs_per_tier: 5000,
+        }
+    }
+
+    /// Create with explicit max pairs per tier from config.
+    pub fn with_max_pairs(mut self, max_pairs: i64) -> Self {
+        self.max_pairs_per_tier = max_pairs;
+        self
     }
 
     /// Called after every Provider.complete() — fire-and-forget.
@@ -79,7 +90,22 @@ impl EigenTuneCollector {
             is_eval_holdout: false,
         };
 
-        self.store.save_pair(&pair).await?;
+        // Retention: evict worst pair if tier is at capacity
+        let can_store = self
+            .store
+            .evict_if_full(tier.as_str(), 0.5, self.max_pairs_per_tier)
+            .await
+            .unwrap_or(true); // on error, allow storage (don't lose data)
+
+        if can_store {
+            self.store.save_pair(&pair).await?;
+        } else {
+            tracing::debug!(
+                tier = %tier.as_str(),
+                "Eigen-Tune: pair not stored — below quality floor for full tier"
+            );
+            return Ok(String::new());
+        }
 
         tracing::debug!(
             pair_id = %id,

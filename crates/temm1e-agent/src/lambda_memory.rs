@@ -25,12 +25,23 @@ const GONE_THRESHOLD: f32 = 0.01;
 
 /// Compute the decay score for a memory at time `now`.
 ///
-/// `score = importance × exp(−λ × hours_since_last_access)`
+/// `score = effective_importance × exp(−λ × hours_since_last_access)`
 ///
 /// This is NEVER stored — computed at read time from immutable fields.
 pub fn decay_score(entry: &LambdaMemoryEntry, now: u64, lambda: f32) -> f32 {
     let age_hours = (now.saturating_sub(entry.last_accessed)) as f32 / 3600.0;
-    entry.importance * (-age_hours * lambda).exp()
+    effective_importance(entry) * (-age_hours * lambda).exp()
+}
+
+/// Importance with recall reinforcement applied.
+///
+/// `effective = (importance + recall_boost).clamp(0.1, 5.0)`
+///
+/// At creation recall_boost = 0.0, so effective = importance (IDENTICAL to
+/// pre-enhancement behavior). Each recall adds +0.3 (capped at 2.0 total
+/// boost). GC applies -0.1 for entries with no access since last sweep.
+pub fn effective_importance(entry: &LambdaMemoryEntry) -> f32 {
+    (entry.importance + entry.recall_boost).clamp(0.1, 5.0)
 }
 
 // ── Adaptive Thresholds ────────────────────────────────────────
@@ -423,6 +434,103 @@ pub fn make_hash(session_id: &str, round: usize, now: u64) -> String {
     hex::encode(&hash[..6]) // 6 bytes = 12 hex chars
 }
 
+// ── Deduplication ─────────────────────────────────────────────
+
+/// Jaccard similarity between two tag sets.
+fn jaccard_similarity(a: &[String], b: &[String]) -> f64 {
+    if a.is_empty() && b.is_empty() {
+        return 0.0;
+    }
+    let set_a: std::collections::HashSet<&str> = a.iter().map(|s| s.as_str()).collect();
+    let set_b: std::collections::HashSet<&str> = b.iter().map(|s| s.as_str()).collect();
+    let intersection = set_a.intersection(&set_b).count();
+    let union = set_a.union(&set_b).count();
+    if union == 0 {
+        0.0
+    } else {
+        intersection as f64 / union as f64
+    }
+}
+
+/// Word-level similarity between two essence texts.
+fn essence_similarity(a: &str, b: &str) -> f64 {
+    if a.is_empty() && b.is_empty() {
+        return 1.0;
+    }
+    if a.is_empty() || b.is_empty() {
+        return 0.0;
+    }
+    let a_lower = a.to_lowercase();
+    let b_lower = b.to_lowercase();
+    let a_words: std::collections::HashSet<&str> = a_lower.split_whitespace().collect();
+    let b_words: std::collections::HashSet<&str> = b_lower.split_whitespace().collect();
+    let intersection = a_words.intersection(&b_words).count();
+    let union = a_words.union(&b_words).count();
+    if union == 0 {
+        0.0
+    } else {
+        intersection as f64 / union as f64
+    }
+}
+
+/// Find merge candidates among a set of entries.
+/// Returns pairs (keep_idx, absorb_idx) where absorb should be merged into keep.
+/// Explicit saves are NEVER merged (protected).
+pub fn dedup_candidates(entries: &[LambdaMemoryEntry]) -> Vec<(usize, usize)> {
+    let mut merges = Vec::new();
+
+    for i in 0..entries.len() {
+        if entries[i].explicit_save {
+            continue; // NEVER merge explicit saves
+        }
+        for j in (i + 1)..entries.len() {
+            if entries[j].explicit_save {
+                continue;
+            }
+            let tag_sim = jaccard_similarity(&entries[i].tags, &entries[j].tags);
+            if tag_sim < 0.6 {
+                continue;
+            }
+            let ess_sim = essence_similarity(&entries[i].essence_text, &entries[j].essence_text);
+            if ess_sim < 0.5 {
+                continue;
+            }
+
+            // Keep the more recently accessed one, absorb the other
+            if entries[i].last_accessed >= entries[j].last_accessed {
+                merges.push((i, j));
+            } else {
+                merges.push((j, i));
+            }
+        }
+    }
+
+    merges
+}
+
+/// Merge entry `absorb` into `keep`. Returns the updated keep entry.
+pub fn merge_entries(keep: &LambdaMemoryEntry, absorb: &LambdaMemoryEntry) -> LambdaMemoryEntry {
+    let mut merged = keep.clone();
+
+    merged.recall_boost = keep.recall_boost.max(absorb.recall_boost);
+    merged.importance = keep.importance.max(absorb.importance);
+    merged.access_count = keep.access_count + absorb.access_count;
+    merged.created_at = keep.created_at.min(absorb.created_at);
+    merged.last_accessed = keep.last_accessed.max(absorb.last_accessed);
+    merged.explicit_save = keep.explicit_save || absorb.explicit_save;
+
+    // Union tags (deduplicated)
+    let mut all_tags = keep.tags.clone();
+    for tag in &absorb.tags {
+        if !all_tags.contains(tag) {
+            all_tags.push(tag.clone());
+        }
+    }
+    merged.tags = all_tags;
+
+    merged
+}
+
 // ── Tests ──────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -444,6 +552,7 @@ mod tests {
             tags: vec!["test".to_string()],
             memory_type: LambdaMemoryType::Conversation,
             session_id: "test-session".to_string(),
+            recall_boost: 0.0,
         }
     }
 
@@ -580,5 +689,142 @@ mod tests {
         let h1 = make_hash("sess1", 1, 1000);
         let h2 = make_hash("sess1", 2, 1000);
         assert_ne!(h1, h2);
+    }
+
+    // ── Fix 2: recall_boost tests ─────────────────────────────
+
+    #[test]
+    fn effective_importance_no_boost() {
+        let entry = test_entry(3.0, 0, 0);
+        assert!((effective_importance(&entry) - 3.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn effective_importance_with_boost() {
+        let mut entry = test_entry(3.0, 0, 0);
+        entry.recall_boost = 2.0;
+        assert!((effective_importance(&entry) - 5.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn effective_importance_clamped() {
+        let mut entry = test_entry(4.5, 0, 0);
+        entry.recall_boost = 2.0;
+        assert!((effective_importance(&entry) - 5.0).abs() < 0.01); // clamped at 5.0
+    }
+
+    #[test]
+    fn effective_importance_floor() {
+        let mut entry = test_entry(0.0, 0, 0);
+        entry.importance = 0.0;
+        assert!((effective_importance(&entry) - 0.1).abs() < 0.01); // clamped at 0.1
+    }
+
+    #[test]
+    fn decay_score_with_boost_higher() {
+        let no_boost = test_entry(3.0, 0, 0);
+        let mut boosted = test_entry(3.0, 0, 0);
+        boosted.recall_boost = 0.6;
+        let now = 86400;
+        assert!(decay_score(&boosted, now, 0.01) > decay_score(&no_boost, now, 0.01));
+    }
+
+    // ── Fix 5: dedup tests ────────────────────────────────────
+
+    #[test]
+    fn jaccard_identical_tags() {
+        let a = vec!["foo".to_string(), "bar".to_string()];
+        assert!((jaccard_similarity(&a, &a) - 1.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn jaccard_disjoint_tags() {
+        let a = vec!["foo".to_string()];
+        let b = vec!["bar".to_string()];
+        assert!((jaccard_similarity(&a, &b) - 0.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn jaccard_overlapping_tags() {
+        let a = vec!["foo".to_string(), "bar".to_string(), "baz".to_string()];
+        let b = vec!["bar".to_string(), "baz".to_string(), "qux".to_string()];
+        // intersection=2, union=4 → 0.5
+        assert!((jaccard_similarity(&a, &b) - 0.5).abs() < 0.01);
+    }
+
+    #[test]
+    fn essence_similarity_identical() {
+        assert!((essence_similarity("deploy staging", "deploy staging") - 1.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn essence_similarity_different() {
+        assert!((essence_similarity("deploy staging", "cooking recipe")).abs() < 0.01);
+    }
+
+    #[test]
+    fn dedup_finds_matches() {
+        let mut a = test_entry(3.0, 100, 200);
+        a.hash = "aaa".to_string();
+        a.tags = vec![
+            "deploy".to_string(),
+            "staging".to_string(),
+            "infra".to_string(),
+        ];
+        a.essence_text = "deploy staging infra".to_string();
+
+        let mut b = test_entry(2.0, 50, 100);
+        b.hash = "bbb".to_string();
+        b.tags = vec![
+            "deploy".to_string(),
+            "staging".to_string(),
+            "infra".to_string(),
+            "server".to_string(),
+        ];
+        b.essence_text = "deploy staging infra".to_string();
+
+        let entries = vec![a, b];
+        let merges = dedup_candidates(&entries);
+        assert_eq!(merges.len(), 1);
+        assert_eq!(merges[0], (0, 1)); // a (more recent) keeps, b absorbed
+    }
+
+    #[test]
+    fn dedup_skips_explicit_saves() {
+        let mut a = test_entry(3.0, 100, 200);
+        a.hash = "aaa".to_string();
+        a.tags = vec!["deploy".to_string(), "staging".to_string()];
+        a.essence_text = "deploy staging".to_string();
+        a.explicit_save = true; // protected!
+
+        let mut b = test_entry(2.0, 50, 100);
+        b.hash = "bbb".to_string();
+        b.tags = vec!["deploy".to_string(), "staging".to_string()];
+        b.essence_text = "deploy staging".to_string();
+
+        let entries = vec![a, b];
+        let merges = dedup_candidates(&entries);
+        assert!(merges.is_empty()); // a is protected, b can't match it
+    }
+
+    #[test]
+    fn merge_entries_unions_evidence() {
+        let mut a = test_entry(3.0, 100, 200);
+        a.access_count = 5;
+        a.recall_boost = 0.6;
+        a.tags = vec!["deploy".to_string(), "staging".to_string()];
+
+        let mut b = test_entry(4.0, 50, 150);
+        b.access_count = 3;
+        b.recall_boost = 0.3;
+        b.tags = vec!["staging".to_string(), "server".to_string()];
+
+        let merged = merge_entries(&a, &b);
+        assert!((merged.importance - 4.0).abs() < 0.01); // max
+        assert!((merged.recall_boost - 0.6).abs() < 0.01); // max
+        assert_eq!(merged.access_count, 8); // sum
+        assert_eq!(merged.created_at, 50); // min
+        assert_eq!(merged.last_accessed, 200); // max
+        assert_eq!(merged.tags.len(), 3); // union: deploy, staging, server
     }
 }

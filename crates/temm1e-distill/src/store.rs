@@ -447,6 +447,82 @@ impl EigenTuneStore {
         Ok(row.get::<i64, _>("cnt"))
     }
 
+    // ── Retention policy ─────────────────────────────────────────────
+
+    /// Get the lowest-quality pair in a tier (eviction candidate).
+    pub async fn get_worst_pair(&self, tier: &str) -> Result<Option<(String, f64)>, Temm1eError> {
+        let row: Option<(String, f64)> = sqlx::query_as(
+            "SELECT id, COALESCE(quality_score, 0.5) as qs \
+             FROM eigentune_pairs WHERE complexity = ?1 \
+             ORDER BY qs ASC LIMIT 1",
+        )
+        .bind(tier)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| Temm1eError::Memory(format!("EigenTune: get_worst_pair: {e}")))?;
+
+        Ok(row)
+    }
+
+    /// Delete a training pair by ID.
+    pub async fn delete_pair(&self, id: &str) -> Result<(), Temm1eError> {
+        sqlx::query("DELETE FROM eigentune_pairs WHERE id = ?1")
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| Temm1eError::Memory(format!("EigenTune: delete_pair: {e}")))?;
+        Ok(())
+    }
+
+    /// Evict the worst pair if the tier is at capacity.
+    /// Returns true if a pair was evicted (or capacity was available).
+    pub async fn evict_if_full(
+        &self,
+        tier: &str,
+        new_quality: f64,
+        max_pairs: i64,
+    ) -> Result<bool, Temm1eError> {
+        let count = self.count_pairs(tier).await?;
+        if count < max_pairs {
+            return Ok(true); // capacity available
+        }
+
+        if let Some((worst_id, worst_quality)) = self.get_worst_pair(tier).await? {
+            if new_quality > worst_quality {
+                self.delete_pair(&worst_id).await?;
+                tracing::debug!(
+                    tier = tier,
+                    evicted_id = %worst_id,
+                    evicted_quality = worst_quality,
+                    new_quality = new_quality,
+                    "Eigen-Tune: evicted worst pair to make room"
+                );
+                return Ok(true);
+            }
+        }
+
+        Ok(false) // new pair not good enough
+    }
+
+    /// Prune pairs older than retention_days with quality < 0.5.
+    pub async fn prune_old_low_quality(&self, retention_days: i64) -> Result<usize, Temm1eError> {
+        let cutoff = (chrono::Utc::now() - chrono::Duration::days(retention_days)).to_rfc3339();
+        let result = sqlx::query(
+            "DELETE FROM eigentune_pairs \
+             WHERE created_at < ?1 AND COALESCE(quality_score, 0.5) < 0.5",
+        )
+        .bind(&cutoff)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| Temm1eError::Memory(format!("EigenTune: prune_old_low_quality: {e}")))?;
+
+        let count = result.rows_affected() as usize;
+        if count > 0 {
+            tracing::info!(pruned = count, "Eigen-Tune: pruned old low-quality pairs");
+        }
+        Ok(count)
+    }
+
     // ── Run operations ──────────────────────────────────────────────
 
     /// Insert a new training run.
