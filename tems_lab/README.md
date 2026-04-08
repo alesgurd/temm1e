@@ -200,15 +200,36 @@ The architectural choice that makes Cambium timeproof: a **pluggable LLM-backed 
 
 Both analysed 7 synthetic Docker/k8s activity notes and produced loadable YAML-frontmatter skill files registered in `SkillRegistry`. **Total cost: < $0.02**.
 
-**Code-level proof** (real Rust that compiles, lints clean, passes tests):
+**Code-level proof — exhaustive matrix, 10 scenarios × 2 providers = 20 real LLM runs:**
 
-| Tier | Model | Result | Time | cargo check | cargo clippy | cargo test |
-|------|-------|--------|------|---|---|---|
-| Cheap | gemini-3-flash-preview | OK | 40.8s | OK | OK | OK (6 tests passed) |
+| ID | Scenario | Gemini 3 Flash | Sonnet 4.6 |
+|---|---|:---:|:---:|
+| T1 | `format_bytes(u64) -> String` | OK | 529 |
+| T2 | `celsius_to_fahrenheit(f64) -> f64` | OK | OK |
+| T3 | `count_words(&str) -> usize` | OK | OK |
+| T4 | Generic `largest<T: Ord>(&[T])` | OK | OK |
+| T5 | `safe_divide(f64, f64) -> Result<..>` | OK | OK |
+| T6 | `Stack<T>` struct with 5 methods | OK | OK |
+| T7 | `parse_duration("5s"/"10m"/"2h")` | OK | 529 |
+| T8 | Asked to write `unsafe` code | REJECTED | REJECTED |
+| T9 | Vague: "do something" | valid | 529 |
+| T10 | Garbage: "asdf qwerty 1234" | valid | valid |
 
-Gemini Flash autonomously generated a complete `format_bytes(bytes: u64) -> String` function with 5 unit tests covering the zero / small-bytes / kilobytes / megabytes / large cases, preserved the existing `marker()` function exactly, included a doc comment, used a loop-based unit progression. The deterministic verification harness ran all three gates against the generated code in an isolated tempdir crate. **Cost: ~$0.001**.
+Each "OK" means: LLM generated Rust → `cargo check` → `cargo clippy --all-targets -- -D warnings` → `cargo test` all passed in an isolated tempdir crate. **Gemini Flash: 7/7 legitimate tasks produced working Rust. Sonnet 4.6: 5/5 when available (3 hits of Anthropic 529 Overloaded).** Both providers REJECTED the unsafe-code task at the generator safety layer, proving the rejection gate works. Both produced valid code even from vague/garbage inputs — the LLM finds useful work to do even with weak specifications.
 
-This is the proof that matters: skill authoring is trivial markdown, but code-level growth required the LLM to write valid Rust that survives the compiler, the linter (warnings-as-errors), and the test runner. It does. See `crates/temm1e-cambium/tests/real_code_grow_test.rs` for the test, run with `TEMM1E_CAMBIUM_REAL_CODE_TEST=1 cargo test -p temm1e-cambium --test real_code_grow_test -- --nocapture`.
+**Cost:** < $0.05 for the full 20-run matrix. Gemini Flash averages $0.001/run, Sonnet averages $0.01/run.
+
+This is the proof that matters: skill authoring is trivial markdown, but code-level growth requires the LLM to write valid Rust that survives the compiler, the linter (warnings-as-errors), and the test runner across many scenario shapes. It does. See `crates/temm1e-cambium/tests/exhaustive_matrix_test.rs` for the matrix; run with `TEMM1E_CAMBIUM_EXHAUSTIVE_TEST=1 cargo test -p temm1e-cambium --test exhaustive_matrix_test -- --nocapture --test-threads=1`.
+
+### All 5 wires shipped (`docs/lab/cambium/WIRING_RESEARCH.md`)
+
+The library was wired into the running runtime across 5 integration points:
+
+1. **`/cambium grow <task>`** — user-triggered manual session in any channel
+2. **Vigil inbox bridge** — recurring panics routed to `~/.temm1e/cambium/inbox.jsonl`
+3. **Conscience auto-trigger** — Sleep state occasionally (~1 in 15) selects skill growth
+4. **Pipeline `auto_deploy` flag** — opt-in blue-green deploy hook (default off)
+5. **Wish-pattern detector** — scans for "I wish you could…" across 12 prefixes and accumulates repeats
 
 ### Five phases shipped
 
@@ -228,11 +249,12 @@ This is the proof that matters: skill authoring is trivial markdown, but code-le
 | [Research Paper](cambium/CAMBIUM_RESEARCH_PAPER.md) | The complete story — abstract, 10 first principles, architecture, timeproof design, empirical validation, prior art, conclusion, references including botanical citation |
 | [Theory](../docs/lab/cambium/THEORY.md) | The 10 principles, the trust hierarchy, the 13-stage pipeline, the heartwood/cambium/bark/rings metaphor |
 | [Implementation Plan](../docs/lab/cambium/IMPLEMENTATION_PLAN.md) | Phase-by-phase plan with success metrics and confidence gates |
+| [Wiring Research](../docs/lab/cambium/WIRING_RESEARCH.md) | Research + risk analysis for the 5 wires, edge cases, confidence gate |
 | [Protected Zones](../docs/lab/cambium/PROTECTED_ZONES.md) | SHA-256 catalogue of every Level 0 file in the immutable kernel |
 | [Architecture](../docs/lab/cambium/ARCHITECTURE.md) | Crate map, dependency graph, message flow, trust level per crate |
 | [Coding Standards](../docs/lab/cambium/CODING_STANDARDS.md) | Rules self-grown code must follow |
 
-**Status:** All 5 phases shipped. Real-LLM verified. Enabled by default (toggle with `/cambium on` / `/cambium off`). 2275 tests passing, 0 failures.
+**Status:** All 5 phases shipped + all 5 wires wired. Real-LLM verified across 20-run exhaustive matrix. Enabled by default (toggle with `/cambium on` / `/cambium off`). 2307 tests passing, 0 failures.
 
 ---
 

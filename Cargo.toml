@@ -145,6 +145,7 @@ temm1e-gaze = { path = "crates/temm1e-gaze" }
 temm1e-perpetuum = { path = "crates/temm1e-perpetuum" }
 temm1e-anima = { path = "crates/temm1e-anima" }
 temm1e-cores = { path = "crates/temm1e-cores" }
+temm1e-cambium = { path = "crates/temm1e-cambium" }
 
 [package]
 name = "temm1e"
@@ -179,6 +180,7 @@ temm1e-hive.workspace = true
 temm1e-perpetuum.workspace = true
 temm1e-anima.workspace = true
 temm1e-cores.workspace = true
+temm1e-cambium.workspace = true
 tokio.workspace = true
 clap.workspace = true
 dirs.workspace = true

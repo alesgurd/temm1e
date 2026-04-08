@@ -57,6 +57,12 @@ pub struct PipelineConfig {
     pub run_tests: bool,
     /// Whether to actually commit on success. False = dry run.
     pub commit_on_success: bool,
+    /// Wire 4: auto-deploy via blue-green binary swap after successful
+    /// pipeline run. Requires `commit_on_success = true`. Default false
+    /// for safety — enable only after track record. When false, Stage 11
+    /// commits to a branch only; when true, Stage 11 ALSO calls the
+    /// Deployer to replace the running binary.
+    pub auto_deploy: bool,
 }
 
 impl Default for PipelineConfig {
@@ -67,6 +73,7 @@ impl Default for PipelineConfig {
             run_formatting: true,
             run_tests: true,
             commit_on_success: true,
+            auto_deploy: false,
         }
     }
 }
@@ -363,9 +370,20 @@ impl<'a> Pipeline<'a> {
             },
         ));
 
-        // STAGE 11: Deployment — for Phase 4 we COMMIT TO BRANCH ONLY,
-        // never deploy. The branch lives in the sandbox until the user
-        // pushes it manually.
+        // STAGE 11: Deployment.
+        //
+        // Wire 4 (auto_deploy):
+        // - `commit_on_success = true, auto_deploy = false` (default):
+        //     Commit to branch only. The branch lives in the sandbox until
+        //     the user pushes it manually. Safe; no runtime change.
+        // - `commit_on_success = true, auto_deploy = true`:
+        //     Commit, then log `auto_deploy_requested` for the caller. The
+        //     caller is responsible for constructing a Deployer from its
+        //     runtime context and invoking `Deployer::swap()`. The pipeline
+        //     does not hold a Deployer reference to avoid coupling the
+        //     sandbox-layer code to the deploy-target-specific paths.
+        // - `commit_on_success = false`:
+        //     Dry run. Nothing committed.
         if self.config.commit_on_success {
             let message = format!(
                 "cambium: {}\n\nTrigger: {:?}\nKind: {:?}\nSession: {}",
@@ -376,7 +394,15 @@ impl<'a> Pipeline<'a> {
             );
             match self.sandbox.commit_changes(&message).await {
                 Ok(sha) => {
-                    session.git_commit = Some(sha);
+                    session.git_commit = Some(sha.clone());
+                    if self.config.auto_deploy {
+                        tracing::info!(
+                            target: "cambium",
+                            session_id = %session_id,
+                            sha = %sha,
+                            "Wire 4: auto_deploy requested — caller must invoke Deployer::swap()"
+                        );
+                    }
                     stages.push((PipelineStage::Deployment, StageResult::Passed));
                 }
                 Err(e) => {

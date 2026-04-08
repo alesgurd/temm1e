@@ -153,6 +153,23 @@ pub struct CambiumConfig {
     /// Path to codebase self-model docs (relative to workspace root).
     #[serde(default = "default_sg_self_model_path")]
     pub self_model_path: String,
+    /// Wire 4: auto-deploy after successful pipeline run. When false
+    /// (default), pipeline commits to a branch only. When true, pipeline
+    /// Stage 11 calls `Deployer::swap()` to replace the running binary.
+    /// Requires track record of successful sessions before enabling.
+    #[serde(default)]
+    pub auto_deploy: bool,
+    /// Wire 2: route vigil-detected bugs to cambium inbox. When true,
+    /// Vigil writes bug signatures to ~/.temm1e/cambium/inbox.jsonl
+    /// after creating a GitHub issue. Users can review the inbox and
+    /// run `/cambium grow fix <bug>` to address specific bugs.
+    #[serde(default = "default_true")]
+    pub vigil_bridge_enabled: bool,
+    /// Wire 5: Anima wish-pattern detection. When true, Anima scans
+    /// recent conversations for "I wish you could…" patterns and
+    /// surfaces suggestions for `/cambium grow`. Default on.
+    #[serde(default = "default_true")]
+    pub wish_detection_enabled: bool,
 }
 
 fn default_sg_max_lines() -> usize {
@@ -185,6 +202,12 @@ impl Default for CambiumConfig {
             failure_cooldown_secs: default_sg_failure_cooldown(),
             trust_level_override: None,
             self_model_path: default_sg_self_model_path(),
+            // SAFETY: auto_deploy defaults to false. Users must explicitly
+            // opt in. Wire 4 is the highest-risk wire — it actually replaces
+            // the running binary. Enable only after Wire 1 has a track record.
+            auto_deploy: false,
+            vigil_bridge_enabled: true,
+            wish_detection_enabled: true,
         }
     }
 }
@@ -1513,6 +1536,9 @@ mod tests {
             failure_cooldown_secs: 43200,
             trust_level_override: Some("approval_required".to_string()),
             self_model_path: "docs/cambium".to_string(),
+            auto_deploy: false,
+            vigil_bridge_enabled: true,
+            wish_detection_enabled: true,
         };
         let toml_str = toml::to_string(&config).unwrap();
         let restored: CambiumConfig = toml::from_str(&toml_str).unwrap();

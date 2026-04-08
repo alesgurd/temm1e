@@ -304,6 +304,51 @@ fn is_process_alive(pid: u32) -> bool {
             .unwrap_or(false)
 }
 
+/// Format a Cambium session report for chat display.
+fn format_cambium_report(report: &temm1e_cambium::session::CambiumSessionReport) -> String {
+    let mut out = String::new();
+    if report.success {
+        out.push_str("Cambium session SUCCEEDED\n");
+    } else {
+        out.push_str("Cambium session FAILED\n");
+    }
+    out.push_str(&format!("Task:    {}\n", report.task));
+    out.push_str(&format!("Model:   {}\n", report.model));
+    out.push_str(&format!("Elapsed: {} ms\n", report.elapsed_ms));
+    out.push_str(&format!(
+        "Stages:  cargo check {} | cargo clippy {} | cargo test {}\n",
+        if report.cargo_check_pass {
+            "OK"
+        } else {
+            "FAIL"
+        },
+        if report.cargo_clippy_pass {
+            "OK"
+        } else {
+            "FAIL"
+        },
+        if report.cargo_test_pass { "OK" } else { "FAIL" },
+    ));
+    if let Some(summary) = &report.test_summary {
+        out.push_str(&format!("Tests:   {}\n", summary.trim()));
+    }
+    if let Some(reason) = &report.failure_reason {
+        out.push_str(&format!("Reason:  {}\n", reason));
+    }
+    if let Some((path, content)) = report.files_generated.first() {
+        let preview_lines = content.lines().take(40).collect::<Vec<_>>().join("\n");
+        out.push_str(&format!(
+            "\nGenerated {} (preview, first 40 lines):\n---\n{}\n---\n",
+            path.display(),
+            preview_lines
+        ));
+        if content.lines().count() > 40 {
+            out.push_str("(truncated; see full output in tempdir)\n");
+        }
+    }
+    out
+}
+
 /// Build the onboarding welcome message with a pre-generated setup link.
 fn onboarding_message_with_link(setup_link: &str) -> String {
     format!(
@@ -3362,6 +3407,13 @@ Just type a message to chat with the AI agent.",
 
                                     // /cambium — gap-driven self-grow toggle
                                     if cmd_lower == "/cambium" || cmd_lower.starts_with("/cambium ") {
+                                        // Read the original (case-preserving) text for the grow task
+                                        let original_args = msg_text_cmd
+                                            .trim()
+                                            .strip_prefix("/cambium")
+                                            .or_else(|| msg_text_cmd.trim().strip_prefix("/CAMBIUM"))
+                                            .unwrap_or("")
+                                            .trim();
                                         let subcmd = cmd_lower
                                             .strip_prefix("/cambium")
                                             .unwrap_or("")
@@ -3378,6 +3430,107 @@ Just type a message to chat with the AI agent.",
                                                     .map(|l| !l.contains("false"))
                                             })
                                             .unwrap_or(true);
+
+                                        // /cambium grow <task> — spawn an async growth session
+                                        if subcmd.starts_with("grow") {
+                                            let task = original_args
+                                                .strip_prefix("grow")
+                                                .or_else(|| original_args.strip_prefix("GROW"))
+                                                .unwrap_or("")
+                                                .trim()
+                                                .to_string();
+                                            if task.is_empty() {
+                                                let reply = temm1e_core::types::message::OutboundMessage {
+                                                    chat_id: msg.chat_id.clone(),
+                                                    text: "Usage: /cambium grow <description>\n\nExample: /cambium grow add a function that converts celsius to fahrenheit with tests".to_string(),
+                                                    reply_to: Some(msg.id.clone()),
+                                                    parse_mode: None,
+                                                };
+                                                send_with_retry(&*sender, reply).await;
+                                                is_heartbeat_clone.store(false, Ordering::Relaxed);
+                                                return;
+                                            }
+                                            if !current_enabled {
+                                                let reply = temm1e_core::types::message::OutboundMessage {
+                                                    chat_id: msg.chat_id.clone(),
+                                                    text: "Cambium is DISABLED. Run /cambium on to enable, then try again.".to_string(),
+                                                    reply_to: Some(msg.id.clone()),
+                                                    parse_mode: None,
+                                                };
+                                                send_with_retry(&*sender, reply).await;
+                                                is_heartbeat_clone.store(false, Ordering::Relaxed);
+                                                return;
+                                            }
+                                            // Acquire the agent's provider + model
+                                            let agent_guard = agent_state.read().await;
+                                            let Some(agent) = agent_guard.as_ref() else {
+                                                drop(agent_guard);
+                                                let reply = temm1e_core::types::message::OutboundMessage {
+                                                    chat_id: msg.chat_id.clone(),
+                                                    text: "Cambium needs an active provider. Set up an API key with /addkey first.".to_string(),
+                                                    reply_to: Some(msg.id.clone()),
+                                                    parse_mode: None,
+                                                };
+                                                send_with_retry(&*sender, reply).await;
+                                                is_heartbeat_clone.store(false, Ordering::Relaxed);
+                                                return;
+                                            };
+                                            let provider = agent.provider_arc();
+                                            let model = agent.model().to_string();
+                                            drop(agent_guard);
+
+                                            // Send acknowledgement
+                                            let ack = temm1e_core::types::message::OutboundMessage {
+                                                chat_id: msg.chat_id.clone(),
+                                                text: format!(
+                                                    "Cambium session started.\nTask: {task}\nModel: {model}\nThis runs in an isolated tempdir — production code is never touched.\nProgress will follow shortly..."
+                                                ),
+                                                reply_to: Some(msg.id.clone()),
+                                                parse_mode: None,
+                                            };
+                                            send_with_retry(&*sender, ack).await;
+
+                                            // Spawn the cambium session asynchronously
+                                            let sender_for_session = sender.clone();
+                                            let chat_id_for_session = msg.chat_id.clone();
+                                            let reply_to_for_session = msg.id.clone();
+                                            tokio::spawn(async move {
+                                                let cfg = temm1e_cambium::session::CambiumSessionConfig::new(
+                                                    task.clone(),
+                                                    model.clone(),
+                                                );
+                                                let report = match temm1e_cambium::session::run_minimal_session(
+                                                    provider,
+                                                    cfg,
+                                                    None,
+                                                )
+                                                .await
+                                                {
+                                                    Ok(r) => r,
+                                                    Err(e) => {
+                                                        let err_reply = temm1e_core::types::message::OutboundMessage {
+                                                            chat_id: chat_id_for_session.clone(),
+                                                            text: format!("Cambium session failed to start: {e}"),
+                                                            reply_to: Some(reply_to_for_session.clone()),
+                                                            parse_mode: None,
+                                                        };
+                                                        send_with_retry(&*sender_for_session, err_reply).await;
+                                                        return;
+                                                    }
+                                                };
+                                                let summary = format_cambium_report(&report);
+                                                let final_reply = temm1e_core::types::message::OutboundMessage {
+                                                    chat_id: chat_id_for_session,
+                                                    text: summary,
+                                                    reply_to: Some(reply_to_for_session),
+                                                    parse_mode: None,
+                                                };
+                                                send_with_retry(&*sender_for_session, final_reply).await;
+                                            });
+                                            is_heartbeat_clone.store(false, Ordering::Relaxed);
+                                            return;
+                                        }
+
                                         let response = match subcmd {
                                             "on" | "enable" | "enabled" => {
                                                 if let Some(parent) = cambium_path.parent() {
@@ -5987,6 +6140,12 @@ Just type a message to chat with the AI agent.",
 
                 // /cambium — gap-driven self-grow toggle
                 if cmd_lower == "/cambium" || cmd_lower.starts_with("/cambium ") {
+                    let original_args = msg_text
+                        .trim()
+                        .strip_prefix("/cambium")
+                        .or_else(|| msg_text.trim().strip_prefix("/CAMBIUM"))
+                        .unwrap_or("")
+                        .trim();
                     let subcmd = cmd_lower.strip_prefix("/cambium").unwrap_or("").trim();
                     let cambium_path = dirs::home_dir()
                         .unwrap_or_default()
@@ -6000,6 +6159,62 @@ Just type a message to chat with the AI agent.",
                                 .map(|l| !l.contains("false"))
                         })
                         .unwrap_or(true); // default enabled
+
+                    // /cambium grow <task> — synchronous in CLI mode (we wait for the result)
+                    if subcmd.starts_with("grow") {
+                        let task = original_args
+                            .strip_prefix("grow")
+                            .or_else(|| original_args.strip_prefix("GROW"))
+                            .unwrap_or("")
+                            .trim()
+                            .to_string();
+                        if task.is_empty() {
+                            println!(
+                                "\nUsage: /cambium grow <description>\n\nExample: /cambium grow add a function that converts celsius to fahrenheit with tests\n"
+                            );
+                            eprint!("temm1e> ");
+                            continue;
+                        }
+                        if !current_enabled {
+                            println!(
+                                "\nCambium is DISABLED. Run /cambium on to enable, then try again.\n"
+                            );
+                            eprint!("temm1e> ");
+                            continue;
+                        }
+                        let Some(agent) = agent_opt.as_ref() else {
+                            println!(
+                                "\nCambium needs an active provider. Set up an API key with /addkey first.\n"
+                            );
+                            eprint!("temm1e> ");
+                            continue;
+                        };
+                        let provider = agent.provider_arc();
+                        let model = agent.model().to_string();
+
+                        println!("\nCambium session started.");
+                        println!("Task: {task}");
+                        println!("Model: {model}");
+                        println!("(this runs in an isolated tempdir; production code is never touched)\n");
+
+                        let cfg = temm1e_cambium::session::CambiumSessionConfig::new(
+                            task.clone(),
+                            model.clone(),
+                        );
+                        match temm1e_cambium::session::run_minimal_session(provider, cfg, None)
+                            .await
+                        {
+                            Ok(report) => {
+                                println!("{}", format_cambium_report(&report));
+                            }
+                            Err(e) => {
+                                println!("\nCambium session failed to start: {e}\n");
+                            }
+                        }
+                        eprint!("temm1e> ");
+                        continue;
+                    }
+
                     match subcmd {
                         "on" | "enable" | "enabled" => {
                             if let Some(parent) = cambium_path.parent() {

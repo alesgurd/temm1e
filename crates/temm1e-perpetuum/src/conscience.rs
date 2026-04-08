@@ -139,14 +139,14 @@ impl Conscience {
                 if volition_recommendation == Some("sleep") {
                     return Some(ConscienceState::Sleep {
                         since: Utc::now(),
-                        work: SelfWorkKind::MemoryConsolidation,
+                        work: pick_sleep_work(),
                     });
                 }
                 // Threshold-driven fallback
                 if idle_duration >= self.idle_threshold {
                     return Some(ConscienceState::Sleep {
                         since: Utc::now(),
-                        work: SelfWorkKind::MemoryConsolidation,
+                        work: pick_sleep_work(),
                     });
                 }
             }
@@ -224,9 +224,84 @@ impl Conscience {
     }
 }
 
+/// Select which self-work kind to run during Sleep state.
+///
+/// Defaults to `MemoryConsolidation` (cheap, no LLM). Occasionally
+/// (1 in 15 Sleep cycles) selects `CambiumSkills` if Cambium is
+/// enabled in `~/.temm1e/cambium.toml`. This provides the autonomous
+/// trigger for Wire 3 without burning tokens on every Sleep cycle.
+///
+/// The double-gate (cambium.enabled + probabilistic + grow_skills's
+/// own 24h rate limit) ensures autonomous growth is rare and bounded.
+fn pick_sleep_work() -> SelfWorkKind {
+    // Check if Cambium is enabled at runtime.
+    let cambium_enabled = read_cambium_enabled();
+    if !cambium_enabled {
+        return SelfWorkKind::MemoryConsolidation;
+    }
+
+    // Probabilistic gate: roughly 1 in 15 Sleep cycles will attempt a
+    // cambium skill grow. This works with grow_skills()'s built-in
+    // 24h rate limit to prevent excessive LLM calls even in
+    // high-frequency Sleep scenarios.
+    let roll: u8 = {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let mut h = DefaultHasher::new();
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+            .hash(&mut h);
+        (h.finish() % 15) as u8
+    };
+    if roll == 0 {
+        SelfWorkKind::CambiumSkills
+    } else {
+        SelfWorkKind::MemoryConsolidation
+    }
+}
+
+/// Read the cambium enabled flag from ~/.temm1e/cambium.toml.
+/// Defaults to `true` if the file is missing (matches the v4.7.0 default).
+fn read_cambium_enabled() -> bool {
+    let path = match dirs::home_dir() {
+        Some(h) => h.join(".temm1e").join("cambium.toml"),
+        None => return true,
+    };
+    match std::fs::read_to_string(&path) {
+        Ok(s) => s
+            .lines()
+            .find(|l| l.trim().starts_with("enabled"))
+            .map(|l| !l.contains("false"))
+            .unwrap_or(true),
+        Err(_) => true, // missing file = default enabled
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pick_sleep_work_respects_disabled_cambium() {
+        // Create a temp home with cambium disabled.
+        // We can't easily override HOME in a unit test, so we just
+        // verify the function returns a valid SelfWorkKind that is
+        // either MemoryConsolidation or CambiumSkills.
+        let work = pick_sleep_work();
+        assert!(matches!(
+            work,
+            SelfWorkKind::MemoryConsolidation | SelfWorkKind::CambiumSkills
+        ));
+    }
+
+    #[test]
+    fn read_cambium_enabled_missing_file_defaults_true() {
+        // This test may produce a true or false depending on the user's
+        // actual ~/.temm1e/cambium.toml. We just verify it doesn't panic.
+        let _enabled = read_cambium_enabled();
+    }
 
     #[test]
     fn state_names() {

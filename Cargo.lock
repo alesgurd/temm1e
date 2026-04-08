@@ -6885,6 +6885,7 @@ dependencies = [
  "temm1e-agent",
  "temm1e-anima",
  "temm1e-automation",
+ "temm1e-cambium",
  "temm1e-channels",
  "temm1e-codex-oauth",
  "temm1e-core",

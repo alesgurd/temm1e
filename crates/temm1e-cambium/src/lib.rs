@@ -22,5 +22,7 @@ pub mod history;
 pub mod llm_generator;
 pub mod pipeline;
 pub mod sandbox;
+pub mod session;
 pub mod trust;
+pub mod wish_detector;
 pub mod zone_checker;

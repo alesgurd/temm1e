@@ -194,6 +194,23 @@ async fn run_vigil(store: &Arc<Store>, caller: &Arc<dyn LlmCaller>) -> Result<St
                         "Vigil: found reportable bug"
                     );
 
+                    // Wire 2: route the bug to the Cambium inbox for later
+                    // user-triggered growth. The user can review the inbox
+                    // and run `/cambium grow fix <sig>` to address specific
+                    // bugs. This is opt-in via `cambium.vigil_bridge_enabled`.
+                    if cambium_vigil_bridge_enabled() {
+                        if let Err(e) =
+                            write_cambium_inbox_entry(&error.signature, &error.message, error.count)
+                                .await
+                        {
+                            tracing::warn!(
+                                target: "perpetuum",
+                                error = %e,
+                                "Vigil: failed to write cambium inbox entry"
+                            );
+                        }
+                    }
+
                     // Try to report to GitHub if configured
                     if can_report {
                         if let Some(ref token) = github_token {
@@ -479,6 +496,77 @@ fn extract_json_array(response: &str) -> &str {
         (Some(s), Some(e)) if e > s => &trimmed[s..=e],
         _ => trimmed,
     }
+}
+
+/// Wire 2: check if the Vigil -> Cambium bridge is enabled.
+/// Reads ~/.temm1e/cambium.toml for the master switch. Defaults to enabled.
+fn cambium_vigil_bridge_enabled() -> bool {
+    let path = match dirs::home_dir() {
+        Some(h) => h.join(".temm1e").join("cambium.toml"),
+        None => return false,
+    };
+    match std::fs::read_to_string(&path) {
+        Ok(s) => {
+            // Default: enabled if file missing or empty.
+            // Disabled only if cambium itself is disabled.
+            s.lines()
+                .find(|l| l.trim().starts_with("enabled"))
+                .map(|l| !l.contains("false"))
+                .unwrap_or(true)
+        }
+        Err(_) => true,
+    }
+}
+
+/// Wire 2: write a bug detected by Vigil to the Cambium inbox.
+/// The inbox is a JSON-lines file at ~/.temm1e/cambium/inbox.jsonl.
+/// Users can review it and run `/cambium grow fix <sig>` to address entries.
+async fn write_cambium_inbox_entry(
+    signature: &str,
+    message: &str,
+    count: u32,
+) -> Result<(), Temm1eError> {
+    let inbox_dir = match dirs::home_dir() {
+        Some(h) => h.join(".temm1e").join("cambium"),
+        None => return Err(Temm1eError::Tool("cannot resolve home directory".into())),
+    };
+    tokio::fs::create_dir_all(&inbox_dir)
+        .await
+        .map_err(|e| Temm1eError::Tool(format!("create cambium dir: {e}")))?;
+
+    let inbox_path = inbox_dir.join("inbox.jsonl");
+    // Truncate the message for safety (logs can be huge).
+    let mut safe_msg = message.to_string();
+    if safe_msg.len() > 500 {
+        safe_msg.truncate(500);
+        safe_msg.push_str("...");
+    }
+    let entry = serde_json::json!({
+        "timestamp": chrono::Utc::now().to_rfc3339(),
+        "source": "vigil",
+        "signature": signature,
+        "message": safe_msg,
+        "occurrences": count,
+        "kind": "bug_fix",
+    });
+    let line = format!("{}\n", serde_json::to_string(&entry).unwrap_or_default());
+
+    use tokio::io::AsyncWriteExt;
+    let mut file = tokio::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&inbox_path)
+        .await
+        .map_err(|e| Temm1eError::Tool(format!("open inbox: {e}")))?;
+    file.write_all(line.as_bytes())
+        .await
+        .map_err(|e| Temm1eError::Tool(format!("write inbox: {e}")))?;
+    tracing::info!(
+        target: "perpetuum",
+        signature = %signature,
+        "Vigil -> Cambium inbox: wrote bug fix entry"
+    );
+    Ok(())
 }
 
 #[cfg(test)]
