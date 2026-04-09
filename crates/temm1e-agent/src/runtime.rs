@@ -2299,8 +2299,12 @@ async fn author_blueprint(
         return Err(Temm1eError::Provider("LLM declined blueprint: SKIP".into()));
     }
 
-    let mut bp = crate::blueprint::parse_blueprint(&text)
-        .map_err(|e| Temm1eError::Provider(format!("Failed to parse authored blueprint: {e}")))?;
+    let mut bp = crate::blueprint::parse_blueprint(&text).map_err(|e| {
+        let preview: String = text.chars().take(300).collect();
+        Temm1eError::Provider(format!(
+            "Failed to parse authored blueprint: {e}\nResponse preview: {preview}"
+        ))
+    })?;
     bp.owner_user_id = user_id.to_string();
     Ok(bp)
 }
