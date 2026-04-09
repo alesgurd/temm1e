@@ -3274,26 +3274,45 @@ async fn main() -> Result<()> {
                                         return;
                                     }
 
-                                    // /usage — show usage summary
-                                    if cmd_lower == "/usage" {
-                                        let summary_text = match usage_store_worker.usage_summary(&msg.chat_id).await {
-                                            Ok(summary) => {
-                                                if summary.turn_count == 0 {
-                                                    "No usage records for this chat yet.".to_string()
-                                                } else {
-                                                    format!(
-                                                        "Usage Summary\nTurns: {}\nAPI Calls: {}\nInput Tokens: {}\nOutput Tokens: {}\nCombined Tokens: {}\nTools Used: {}\nTotal Cost: ${:.4}",
-                                                        summary.turn_count,
-                                                        summary.total_api_calls,
-                                                        summary.total_input_tokens,
-                                                        summary.total_output_tokens,
-                                                        summary.combined_tokens(),
-                                                        summary.total_tools_used,
-                                                        summary.total_cost_usd,
-                                                    )
+                                    // /usage [on|off] — show usage summary or toggle per-turn display
+                                    if cmd_lower == "/usage"
+                                        || cmd_lower.starts_with("/usage ")
+                                    {
+                                        let subcmd = cmd_lower.strip_prefix("/usage").unwrap().trim();
+                                        let summary_text = match subcmd {
+                                            "off" | "disable" => {
+                                                match usage_store_worker.set_usage_display(&msg.chat_id, false).await {
+                                                    Ok(()) => "Per-turn usage display disabled. Use /usage to check stats anytime.".to_string(),
+                                                    Err(e) => format!("Failed to update usage display: {}", e),
                                                 }
                                             }
-                                            Err(e) => format!("Failed to query usage: {}", e),
+                                            "on" | "enable" => {
+                                                match usage_store_worker.set_usage_display(&msg.chat_id, true).await {
+                                                    Ok(()) => "Per-turn usage display enabled.".to_string(),
+                                                    Err(e) => format!("Failed to update usage display: {}", e),
+                                                }
+                                            }
+                                            _ => {
+                                                match usage_store_worker.usage_summary(&msg.chat_id).await {
+                                                    Ok(summary) => {
+                                                        if summary.turn_count == 0 {
+                                                            "No usage records for this chat yet.".to_string()
+                                                        } else {
+                                                            format!(
+                                                                "Usage Summary\nTurns: {}\nAPI Calls: {}\nInput Tokens: {}\nOutput Tokens: {}\nCombined Tokens: {}\nTools Used: {}\nTotal Cost: ${:.4}",
+                                                                summary.turn_count,
+                                                                summary.total_api_calls,
+                                                                summary.total_input_tokens,
+                                                                summary.total_output_tokens,
+                                                                summary.combined_tokens(),
+                                                                summary.total_tools_used,
+                                                                summary.total_cost_usd,
+                                                            )
+                                                        }
+                                                    }
+                                                    Err(e) => format!("Failed to query usage: {}", e),
+                                                }
+                                            }
                                         };
                                         let reply = temm1e_core::types::message::OutboundMessage {
                                             chat_id: msg.chat_id.clone(),
@@ -3370,6 +3389,8 @@ Available commands:\n\n\
 /model <name> — Switch to a different model\n\
 /removekey <provider> — Remove a provider's API key\n\
 /usage — Show token usage and cost summary\n\
+/usage on — Enable per-turn usage display\n\
+/usage off — Disable per-turn usage display\n\
 /memory — Show current memory strategy\n\
 /memory lambda — Switch to λ-Memory (decay + persistence)\n\
 /memory echo — Switch to Echo Memory (context window only)\n\
@@ -6004,26 +6025,43 @@ Just type a message to chat with the AI agent.",
                     continue;
                 }
 
-                // /usage — show usage summary
-                if cmd_lower == "/usage" {
-                    match usage_store.usage_summary(&msg.chat_id).await {
-                        Ok(summary) => {
-                            if summary.turn_count == 0 {
-                                println!("\nNo usage records for this chat yet.\n");
-                            } else {
-                                println!(
-                                    "\nUsage Summary\nTurns: {}\nAPI Calls: {}\nInput Tokens: {}\nOutput Tokens: {}\nCombined Tokens: {}\nTools Used: {}\nTotal Cost: ${:.4}\n",
-                                    summary.turn_count,
-                                    summary.total_api_calls,
-                                    summary.total_input_tokens,
-                                    summary.total_output_tokens,
-                                    summary.combined_tokens(),
-                                    summary.total_tools_used,
-                                    summary.total_cost_usd,
-                                );
+                // /usage [on|off] — show usage summary or toggle per-turn display
+                if cmd_lower == "/usage" || cmd_lower.starts_with("/usage ") {
+                    let subcmd = cmd_lower.strip_prefix("/usage").unwrap().trim();
+                    match subcmd {
+                        "off" | "disable" => {
+                            match usage_store.set_usage_display(&msg.chat_id, false).await {
+                                Ok(()) => println!("\nPer-turn usage display disabled. Use /usage to check stats anytime.\n"),
+                                Err(e) => eprintln!("Failed to update usage display: {}", e),
                             }
                         }
-                        Err(e) => eprintln!("Failed to query usage: {}", e),
+                        "on" | "enable" => {
+                            match usage_store.set_usage_display(&msg.chat_id, true).await {
+                                Ok(()) => println!("\nPer-turn usage display enabled.\n"),
+                                Err(e) => eprintln!("Failed to update usage display: {}", e),
+                            }
+                        }
+                        _ => {
+                            match usage_store.usage_summary(&msg.chat_id).await {
+                                Ok(summary) => {
+                                    if summary.turn_count == 0 {
+                                        println!("\nNo usage records for this chat yet.\n");
+                                    } else {
+                                        println!(
+                                            "\nUsage Summary\nTurns: {}\nAPI Calls: {}\nInput Tokens: {}\nOutput Tokens: {}\nCombined Tokens: {}\nTools Used: {}\nTotal Cost: ${:.4}\n",
+                                            summary.turn_count,
+                                            summary.total_api_calls,
+                                            summary.total_input_tokens,
+                                            summary.total_output_tokens,
+                                            summary.combined_tokens(),
+                                            summary.total_tools_used,
+                                            summary.total_cost_usd,
+                                        );
+                                    }
+                                }
+                                Err(e) => eprintln!("Failed to query usage: {}", e),
+                            }
+                        }
                     }
                     eprint!("temm1e> ");
                     continue;
@@ -6042,6 +6080,8 @@ Just type a message to chat with the AI agent.",
                          /model <name> — Switch to a different model\n\
                          /removekey <provider> — Remove a provider's API key\n\
                          /usage — Show token usage and cost summary\n\
+                         /usage on — Enable per-turn usage display\n\
+                         /usage off — Disable per-turn usage display\n\
                          /memory — Show current memory strategy\n\
                          /memory lambda — Switch to λ-Memory (decay + persistence)\n\
                          /memory echo — Switch to Echo Memory (context window only)\n\
