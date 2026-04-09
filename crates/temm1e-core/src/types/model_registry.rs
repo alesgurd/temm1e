@@ -166,6 +166,10 @@ fn lookup(model: &str) -> Option<ModelLimits> {
         },
 
         // ── MiniMax ───────────────────────────────────────────────────
+        "MiniMax-M2.7" | "minimax-m2.7" => ModelLimits {
+            context_window: 204_800,
+            max_output_tokens: 131_072,
+        },
         "MiniMax-M2.5" | "minimax-m2.5" => ModelLimits {
             context_window: 204_800,
             max_output_tokens: 196_608,
@@ -333,7 +337,7 @@ pub fn available_models_for_provider(provider: &str) -> Vec<&'static str> {
             "glm-4.6v",
             "glm-4.6v-flash",
         ],
-        "minimax" => vec!["MiniMax-M2.5", "MiniMax-M2.5-highspeed"],
+        "minimax" => vec!["MiniMax-M2.7", "MiniMax-M2.5", "MiniMax-M2.5-highspeed"],
         "stepfun" => vec!["step-3.5-flash", "step-3", "step-2-16k"],
         _ => vec![],
     }
@@ -465,7 +469,11 @@ mod tests {
     }
 
     #[test]
-    fn minimax_model() {
+    fn minimax_models() {
+        let (ctx, out) = model_limits("MiniMax-M2.7");
+        assert_eq!(ctx, 204_800);
+        assert_eq!(out, 131_072);
+
         let (ctx, out) = model_limits("MiniMax-M2.5");
         assert_eq!(ctx, 204_800);
         assert_eq!(out, 196_608);
