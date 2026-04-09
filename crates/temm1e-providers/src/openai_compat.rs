@@ -119,11 +119,19 @@ impl OpenAICompatProvider {
         sanitize_tool_ordering(&mut messages);
 
         // Gemini 3 models require a `thought_signature` on the first tool_call
-        // in each assistant message. Inject the documented bypass value for
-        // tool_calls that don't carry a real signature (old history, other
-        // providers). Non-Gemini providers ignore the extra_content field.
+        // in each assistant message. Only inject for Gemini models — other
+        // providers (e.g. MiniMax) reject the non-standard `extra_content` field.
         // See: https://ai.google.dev/gemini-api/docs/thought-signatures
-        inject_thought_signature_bypass(&mut messages);
+        if request.model.to_lowercase().contains("gemini") {
+            inject_thought_signature_bypass(&mut messages);
+        }
+
+        // Merge consecutive messages with the same role. Providers like MiniMax
+        // reject conversations with consecutive system or user messages
+        // ("invalid chat setting" error 2013). Tool messages are left as-is
+        // because each carries a distinct tool_call_id. Assistant messages
+        // with tool_calls are also left as-is.
+        merge_consecutive_same_role(&mut messages);
 
         let mut body = serde_json::json!({
             "model": request.model,
@@ -131,10 +139,12 @@ impl OpenAICompatProvider {
         });
 
         if let Some(max_tokens) = request.max_tokens {
-            // OpenAI deprecated max_tokens in favor of max_completion_tokens
-            // for newer models (GPT-4o, o1, etc.). Other OpenAI-compatible
-            // providers (Gemini, Grok, OpenRouter) still use max_tokens.
-            if self.base_url.contains("api.openai.com") {
+            // OpenAI and MiniMax use max_completion_tokens (max_tokens is
+            // deprecated / rejected). Other OpenAI-compatible providers
+            // (Gemini, Grok, OpenRouter) still use max_tokens.
+            if self.base_url.contains("api.openai.com")
+                || self.base_url.contains("api.minimax.io")
+            {
                 body["max_completion_tokens"] = serde_json::json!(max_tokens);
             } else {
                 body["max_tokens"] = serde_json::json!(max_tokens);
@@ -295,6 +305,55 @@ fn sanitize_nonstream_body(body: &str) -> String {
         }
     }
     s.to_string()
+}
+
+/// Merge consecutive messages that share the same role into a single message.
+///
+/// Providers like MiniMax reject conversations where system or user messages
+/// appear back-to-back. This function concatenates their `content` fields
+/// (newline-separated). Messages with `tool_calls` (assistant) or
+/// `tool_call_id` (tool) are never merged because each carries distinct
+/// semantic identity.
+fn merge_consecutive_same_role(messages: &mut Vec<serde_json::Value>) {
+    if messages.len() < 2 {
+        return;
+    }
+
+    let mut merged: Vec<serde_json::Value> = Vec::with_capacity(messages.len());
+
+    for msg in messages.drain(..) {
+        let dominated_by_text = msg.get("tool_calls").is_none()
+            && msg.get("tool_call_id").is_none();
+
+        let should_merge = if let Some(prev) = merged.last() {
+            dominated_by_text
+                && prev.get("tool_calls").is_none()
+                && prev.get("tool_call_id").is_none()
+                && prev.get("role") == msg.get("role")
+        } else {
+            false
+        };
+
+        if should_merge {
+            // Append content to previous message
+            let prev = merged.last_mut().unwrap();
+            let prev_content = prev
+                .get("content")
+                .and_then(|c| c.as_str())
+                .unwrap_or("")
+                .to_string();
+            let new_content = msg
+                .get("content")
+                .and_then(|c| c.as_str())
+                .unwrap_or("");
+            prev["content"] =
+                serde_json::json!(format!("{}\n\n{}", prev_content, new_content));
+        } else {
+            merged.push(msg);
+        }
+    }
+
+    *messages = merged;
 }
 
 /// Removes tool result messages (`"role": "tool"`) that don't immediately follow
@@ -1095,6 +1154,65 @@ mod tests {
         assert_eq!(tools.len(), 1);
         assert_eq!(tools[0]["type"], "function");
         assert_eq!(tools[0]["function"]["name"], "read_file");
+    }
+
+    #[test]
+    fn minimax_uses_max_completion_tokens() {
+        let provider = OpenAICompatProvider::new("test-key".to_string())
+            .with_base_url("https://api.minimax.io/v1".to_string());
+        let request = CompletionRequest {
+            model: "MiniMax-M2.7".to_string(),
+            messages: vec![ChatMessage {
+                role: Role::User,
+                content: MessageContent::Text("Hello".to_string()),
+            }],
+            tools: Vec::new(),
+            max_tokens: Some(4096),
+            temperature: Some(0.7),
+            system: None,
+        };
+        let body = provider.build_request_body(&request, false).unwrap();
+        assert_eq!(body["max_completion_tokens"], 4096);
+        assert!(body.get("max_tokens").is_none());
+    }
+
+    #[test]
+    fn merge_consecutive_system_and_user_messages() {
+        let mut msgs = vec![
+            serde_json::json!({"role": "system", "content": "You are helpful."}),
+            serde_json::json!({"role": "system", "content": "Be concise."}),
+            serde_json::json!({"role": "system", "content": "Use markdown."}),
+            serde_json::json!({"role": "user", "content": "Hello"}),
+            serde_json::json!({"role": "user", "content": "How are you?"}),
+            serde_json::json!({"role": "assistant", "content": "Fine!"}),
+            serde_json::json!({"role": "user", "content": "Great"}),
+        ];
+        merge_consecutive_same_role(&mut msgs);
+        assert_eq!(msgs.len(), 4);
+        // 3 system messages → 1
+        assert_eq!(msgs[0]["role"], "system");
+        assert!(msgs[0]["content"].as_str().unwrap().contains("Be concise."));
+        assert!(msgs[0]["content"].as_str().unwrap().contains("Use markdown."));
+        // 2 consecutive user → 1
+        assert_eq!(msgs[1]["role"], "user");
+        assert!(msgs[1]["content"].as_str().unwrap().contains("How are you?"));
+        // assistant stays
+        assert_eq!(msgs[2]["role"], "assistant");
+        // lone user stays
+        assert_eq!(msgs[3]["role"], "user");
+        assert_eq!(msgs[3]["content"], "Great");
+    }
+
+    #[test]
+    fn merge_preserves_tool_messages() {
+        let mut msgs = vec![
+            serde_json::json!({"role": "assistant", "content": "", "tool_calls": [{"id": "tc1", "type": "function", "function": {"name": "shell", "arguments": "{}"}}]}),
+            serde_json::json!({"role": "tool", "content": "ok", "tool_call_id": "tc1"}),
+            serde_json::json!({"role": "assistant", "content": "Done"}),
+        ];
+        merge_consecutive_same_role(&mut msgs);
+        // Nothing should be merged — tool_calls and tool_call_id messages stay separate
+        assert_eq!(msgs.len(), 3);
     }
 
     #[test]
