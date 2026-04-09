@@ -307,6 +307,28 @@ fn sanitize_nonstream_body(body: &str) -> String {
     s.to_string()
 }
 
+/// Strip `<think>…</think>` blocks that some models (MiniMax, DeepSeek) embed
+/// in their text output for chain-of-thought reasoning. Returns the cleaned
+/// text with thinking blocks removed.
+fn strip_thinking_tags(text: &str) -> String {
+    let mut result = String::with_capacity(text.len());
+    let mut remaining = text;
+
+    while let Some(start) = remaining.find("<think>") {
+        // Keep everything before <think>
+        result.push_str(&remaining[..start]);
+        // Find matching </think>
+        if let Some(end) = remaining[start..].find("</think>") {
+            remaining = &remaining[start + end + "</think>".len()..];
+        } else {
+            // Unclosed <think> — discard the rest (still thinking)
+            return result.trim().to_string();
+        }
+    }
+    result.push_str(remaining);
+    result.trim().to_string()
+}
+
 /// Merge consecutive messages that share the same role into a single message.
 ///
 /// Providers like MiniMax reject conversations where system or user messages
@@ -793,6 +815,7 @@ impl Provider for OpenAICompatProvider {
         let mut content = Vec::new();
 
         if let Some(text) = choice.message.content {
+            let text = strip_thinking_tags(&text);
             if !text.is_empty() {
                 content.push(ContentPart::Text { text });
             }
@@ -907,7 +930,67 @@ impl Provider for OpenAICompatProvider {
             },
         );
 
-        Ok(Box::pin(event_stream))
+        // Wrap the stream to strip <think>…</think> blocks from text deltas.
+        // Uses a small state machine: accumulate text while inside a think
+        // block, and only emit deltas that are outside thinking tags.
+        let pinned_inner: BoxStream<'_, Result<StreamChunk, Temm1eError>> =
+            Box::pin(event_stream);
+        let filtered_stream = futures::stream::unfold(
+            (pinned_inner, false, String::new()), // (inner, inside_think, pending_buf)
+            |(mut inner, mut inside_think, mut pending)| async move {
+                loop {
+                    let item = inner.next().await?;
+                    match item {
+                        Ok(mut chunk) => {
+                            if let Some(ref delta) = chunk.delta {
+                                pending.push_str(delta);
+                                let mut output = String::new();
+
+                                while !pending.is_empty() {
+                                    if inside_think {
+                                        if let Some(end) = pending.find("</think>") {
+                                            pending = pending[end + "</think>".len()..].to_string();
+                                            inside_think = false;
+                                        } else {
+                                            // Still inside think — consume all, wait for more
+                                            pending.clear();
+                                            break;
+                                        }
+                                    } else if let Some(start) = pending.find("<think>") {
+                                        output.push_str(&pending[..start]);
+                                        pending = pending[start + "<think>".len()..].to_string();
+                                        inside_think = true;
+                                    } else if pending.starts_with('<') || pending.ends_with('<')
+                                        || pending.ends_with("<t")
+                                        || pending.ends_with("<th")
+                                        || pending.ends_with("<thi")
+                                        || pending.ends_with("<thin")
+                                        || pending.ends_with("<think")
+                                    {
+                                        // Might be a partial <think> tag — wait for more data
+                                        break;
+                                    } else {
+                                        output.push_str(&pending);
+                                        pending.clear();
+                                    }
+                                }
+
+                                if output.is_empty() {
+                                    continue; // suppress this chunk
+                                }
+                                chunk.delta = Some(output);
+                            }
+                            return Some((Ok(chunk), (inner, inside_think, pending)));
+                        }
+                        Err(e) => {
+                            return Some((Err(e), (inner, inside_think, pending)));
+                        }
+                    }
+                }
+            },
+        );
+
+        Ok(Box::pin(filtered_stream))
     }
 
     async fn health_check(&self) -> Result<bool, Temm1eError> {
@@ -1174,6 +1257,30 @@ mod tests {
         let body = provider.build_request_body(&request, false).unwrap();
         assert_eq!(body["max_completion_tokens"], 4096);
         assert!(body.get("max_tokens").is_none());
+    }
+
+    #[test]
+    fn strip_thinking_tags_removes_think_block() {
+        let input = "<think>\nLet me analyze this...\n</think>\nHere is my answer.";
+        assert_eq!(strip_thinking_tags(input), "Here is my answer.");
+    }
+
+    #[test]
+    fn strip_thinking_tags_noop_without_tags() {
+        let input = "Just a normal response.";
+        assert_eq!(strip_thinking_tags(input), "Just a normal response.");
+    }
+
+    #[test]
+    fn strip_thinking_tags_multiple_blocks() {
+        let input = "<think>first</think>Hello <think>second</think>world";
+        assert_eq!(strip_thinking_tags(input), "Hello world");
+    }
+
+    #[test]
+    fn strip_thinking_tags_unclosed() {
+        let input = "<think>still thinking...";
+        assert_eq!(strip_thinking_tags(input), "");
     }
 
     #[test]

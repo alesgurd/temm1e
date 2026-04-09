@@ -418,8 +418,12 @@ struct BlueprintFrontmatter {
 }
 
 /// Parse a Blueprint from its stored form (YAML frontmatter + Markdown body).
+///
+/// Tolerates LLM responses that wrap the blueprint in markdown code fences
+/// (e.g. ` ```yaml ... ``` `) or include preamble text before the `---`.
 pub fn parse_blueprint(raw: &str) -> Result<Blueprint, String> {
-    let trimmed = raw.trim();
+    let trimmed = strip_code_fences(raw.trim());
+    let trimmed = trimmed.trim();
     if !trimmed.starts_with("---") {
         return Err("Blueprint content does not start with YAML frontmatter".into());
     }
@@ -455,6 +459,44 @@ pub fn parse_blueprint(raw: &str) -> Result<Blueprint, String> {
         token_count,
         last_executed_at: None,
     })
+}
+
+/// Strip markdown code fences and preamble text that some LLMs add before the
+/// YAML frontmatter. If the input already starts with `---`, it's returned as-is.
+fn strip_code_fences(raw: &str) -> &str {
+    // Fast path: already clean
+    if raw.starts_with("---") {
+        return raw;
+    }
+
+    // Try to find `---` after stripping a code fence opener like ```yaml or ```
+    // Pattern: optional preamble, then ```<lang>\n, then content, then ```
+    if let Some(fence_start) = raw.find("```") {
+        let after_fence = &raw[fence_start + 3..];
+        // Skip the optional language tag (e.g. "yaml\n", "markdown\n", "\n")
+        if let Some(newline) = after_fence.find('\n') {
+            let content = after_fence[newline + 1..].trim_start();
+            // Strip trailing fence if present
+            if let Some(end_fence) = content.rfind("```") {
+                let inner = content[..end_fence].trim();
+                if inner.starts_with("---") {
+                    return inner;
+                }
+            } else if content.starts_with("---") {
+                return content;
+            }
+        }
+    }
+
+    // Try to find `---` anywhere (LLM added preamble text before frontmatter)
+    if let Some(pos) = raw.find("\n---") {
+        let candidate = raw[pos + 1..].trim_start();
+        if candidate.starts_with("---") {
+            return candidate;
+        }
+    }
+
+    raw
 }
 
 // ---------------------------------------------------------------------------
@@ -1814,5 +1856,36 @@ Deploy the app.
         let (name, ann) = extract_parallel_annotation("Run Tests (parallel with Phase 2)");
         assert_eq!(name, "Run Tests");
         assert!(matches!(ann, Some(ParallelAnnotation::ParallelWith(2))));
+    }
+
+    #[test]
+    fn strip_code_fences_noop_when_clean() {
+        let input = "---\nid: test\n---\nbody";
+        assert_eq!(strip_code_fences(input), input);
+    }
+
+    #[test]
+    fn strip_code_fences_removes_yaml_fence() {
+        let input = "```yaml\n---\nid: test\n---\nbody\n```";
+        assert!(strip_code_fences(input).starts_with("---"));
+        assert!(strip_code_fences(input).contains("id: test"));
+    }
+
+    #[test]
+    fn strip_code_fences_removes_bare_fence() {
+        let input = "```\n---\nid: test\n---\nbody\n```";
+        assert!(strip_code_fences(input).starts_with("---"));
+    }
+
+    #[test]
+    fn strip_code_fences_handles_preamble() {
+        let input = "Here is the blueprint:\n---\nid: test\n---\nbody";
+        assert!(strip_code_fences(input).starts_with("---"));
+    }
+
+    #[test]
+    fn strip_code_fences_with_preamble_and_fence() {
+        let input = "Sure! Here's your blueprint:\n\n```yaml\n---\nid: test\n---\nbody\n```";
+        assert!(strip_code_fences(input).starts_with("---"));
     }
 }
