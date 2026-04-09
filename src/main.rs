@@ -460,7 +460,7 @@ fn build_system_prompt(personality: &temm1e_anima::personality::PersonalityConfi
         "- openrouter: any model via anthropic/claude-sonnet-4-6, openai/gpt-5.2, etc.\n",
     );
     prompt.push_str("- zai (zhipu): glm-4.7-flash, glm-4.7, glm-5, glm-5-code, glm-4.6v\n");
-    prompt.push_str("- minimax: MiniMax-M2.5\n");
+    prompt.push_str("- minimax: MiniMax-M2.5, MiniMax-M2.7\n");
     prompt.push_str("- stepfun: step-3.5-flash, step-3\n");
     prompt.push_str("- openai-codex: gpt-5.4 (recommended), gpt-5.3-codex, gpt-5.2-codex (OAuth subscription)\n");
 
