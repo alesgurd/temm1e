@@ -339,6 +339,37 @@ pub fn available_models_for_provider(provider: &str) -> Vec<&'static str> {
     }
 }
 
+/// All known provider names (used to search for a model across all providers).
+pub const ALL_KNOWN_PROVIDERS: &[&str] = &[
+    "anthropic",
+    "openai",
+    "openai-codex",
+    "gemini",
+    "grok",
+    "openrouter",
+    "zai",
+    "minimax",
+    "stepfun",
+];
+
+/// Find which known provider owns a model. Returns `None` if the model is
+/// unknown or only available via proxy/OpenRouter.
+pub fn provider_for_model(model: &str) -> Option<&'static str> {
+    for &provider in ALL_KNOWN_PROVIDERS {
+        if available_models_for_provider(provider).contains(&model) {
+            return Some(provider);
+        }
+    }
+    // Also check default models (e.g. gpt-5.4 is default for openai-codex
+    // but might not be in the available list)
+    for &provider in ALL_KNOWN_PROVIDERS {
+        if default_model(provider) == model {
+            return Some(provider);
+        }
+    }
+    None
+}
+
 /// Quick vision check for model display.
 pub fn is_vision_model(model: &str) -> bool {
     let m = model.to_lowercase();
@@ -480,5 +511,26 @@ mod tests {
         let (ctx, out) = model_limits("openrouter/hunter-alpha");
         assert_eq!(ctx, 1_048_576);
         assert_eq!(out, 32_000);
+    }
+
+    #[test]
+    fn provider_for_model_known() {
+        assert_eq!(provider_for_model("claude-sonnet-4-6"), Some("anthropic"));
+        assert_eq!(provider_for_model("gpt-5.2"), Some("openai"));
+        assert_eq!(provider_for_model("MiniMax-M2.7"), Some("minimax"));
+        assert_eq!(provider_for_model("gemini-3-flash-preview"), Some("gemini"));
+        assert_eq!(provider_for_model("grok-3"), Some("grok"));
+        assert_eq!(provider_for_model("step-3.5-flash"), Some("stepfun"));
+    }
+
+    #[test]
+    fn provider_for_model_default_only() {
+        // gpt-5.4 is default for openai-codex but not in available_models list
+        assert_eq!(provider_for_model("gpt-5.4"), Some("openai-codex"));
+    }
+
+    #[test]
+    fn provider_for_model_unknown() {
+        assert_eq!(provider_for_model("totally-unknown-model"), None);
     }
 }
