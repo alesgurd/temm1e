@@ -867,25 +867,43 @@ fn handle_model_command(args: &str) -> String {
     // Skip validation for proxy/OpenRouter providers (custom base_url) — they accept any model.
     let is_proxy = active_provider.base_url.is_some() || active_provider.name == "openrouter";
     let known = available_models_for_provider(&active_provider.name);
-    if !is_proxy && !known.is_empty() && !known.contains(&target) {
-        let list = known
-            .iter()
-            .map(|m| {
-                let v = if is_vision_model(m) { " [vision]" } else { "" };
-                format!("  {}{}", m, v)
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-        return format!(
-            "Unknown model '{}' for provider '{}'.\n\nAvailable models:\n{}\n\nUse exact name: /model <model-name>",
-            target, active_provider.name, list
-        );
-    }
 
-    // Update the model in credentials.toml
+    // If the model isn't on the active provider, check if another configured
+    // provider owns it and auto-switch both provider + model.
+    let switch_provider = if !is_proxy && !known.is_empty() && !known.contains(&target) {
+        // Search other configured providers for this model
+        let other = creds.providers.iter().find(|p| {
+            p.name != creds.active && available_models_for_provider(&p.name).contains(&target)
+        });
+        match other {
+            Some(p) => Some(p.name.clone()),
+            None => {
+                let list = known
+                    .iter()
+                    .map(|m| {
+                        let v = if is_vision_model(m) { " [vision]" } else { "" };
+                        format!("  {}{}", m, v)
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                return format!(
+                    "Unknown model '{}' for provider '{}'.\n\nAvailable models:\n{}\n\nUse exact name: /model <model-name>",
+                    target, active_provider.name, list
+                );
+            }
+        }
+    } else {
+        None
+    };
+
+    // Update the model (and optionally the active provider) in credentials.toml
     let mut updated = creds.clone();
+    let old_provider = creds.active.clone();
+    if let Some(ref new_provider) = switch_provider {
+        updated.active = new_provider.clone();
+    }
     for p in &mut updated.providers {
-        if p.name == creds.active {
+        if p.name == updated.active {
             p.model = target.to_string();
         }
     }
@@ -896,15 +914,29 @@ fn handle_model_command(args: &str) -> String {
             if let Err(e) = std::fs::write(&path, &content) {
                 return format!("Failed to write credentials: {}", e);
             }
-            tracing::info!(
-                old_model = %active_provider.model,
-                new_model = %target,
-                "Model switched via /model command"
-            );
-            format!(
-                "Model switched: {} → {}\nHot-reload will apply after this response.",
-                active_provider.model, target
-            )
+            if let Some(ref new_provider) = switch_provider {
+                tracing::info!(
+                    old_provider = %old_provider,
+                    new_provider = %new_provider,
+                    old_model = %active_provider.model,
+                    new_model = %target,
+                    "Provider and model switched via /model command"
+                );
+                format!(
+                    "Model switched: {} → {} (provider: {} → {})\nHot-reload will apply after this response.",
+                    active_provider.model, target, old_provider, new_provider
+                )
+            } else {
+                tracing::info!(
+                    old_model = %active_provider.model,
+                    new_model = %target,
+                    "Model switched via /model command"
+                );
+                format!(
+                    "Model switched: {} → {}\nHot-reload will apply after this response.",
+                    active_provider.model, target
+                )
+            }
         }
         Err(e) => format!("Failed to serialize credentials: {}", e),
     }
