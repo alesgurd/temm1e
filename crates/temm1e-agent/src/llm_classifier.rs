@@ -290,7 +290,7 @@ pub async fn classify_message(
         model: model.to_string(),
         messages: classify_messages,
         tools: vec![],
-        max_tokens: None,
+        max_tokens: Some(512),
         temperature: Some(0.0),
         system: Some(system_prompt),
     };
