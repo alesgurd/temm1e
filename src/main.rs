@@ -13,7 +13,7 @@ use temm1e_core::config::credentials::{
     load_credentials_file, load_saved_credentials, save_credentials,
 };
 use temm1e_core::types::model_registry::{
-    available_models_for_provider, default_model, is_vision_model,
+    available_models_for_provider, default_model, is_vision_model, provider_for_model,
 };
 use temm1e_core::Channel;
 use tokio::sync::Mutex;
@@ -749,37 +749,45 @@ fn list_configured_providers() -> String {
 /// - `/model` (no args) → show current model + all available models per provider
 /// - `/model <exact-name>` → switch to that model on the active provider
 fn handle_model_command(args: &str) -> String {
-    // Check Codex OAuth first — if active and no args, show Codex model info
+    // Codex OAuth availability — checked throughout the function
+    #[cfg(feature = "codex-oauth")]
+    let has_codex_oauth = temm1e_codex_oauth::TokenStore::exists();
+    #[cfg(not(feature = "codex-oauth"))]
+    let has_codex_oauth = false;
+
+    #[cfg(feature = "codex-oauth")]
+    const CODEX_MODELS: &[&str] = &[
+        "gpt-5.4",
+        "gpt-5.3-codex",
+        "gpt-5.3-codex-spark",
+        "gpt-5.2",
+        "gpt-5.2-codex",
+        "gpt-5.1-codex",
+        "gpt-5.1-codex-mini",
+        "gpt-5",
+        "gpt-5-codex",
+        "gpt-5-codex-mini",
+        "gpt-5-mini",
+        "gpt-4.1",
+        "gpt-4.1-mini",
+        "gpt-4.1-nano",
+        "o4-mini",
+    ];
+
+    // Codex-only mode (no other providers configured)
     #[cfg(feature = "codex-oauth")]
     {
         let has_creds = load_credentials_file()
             .map(|c| !c.providers.is_empty())
             .unwrap_or(false);
-        if !has_creds && temm1e_codex_oauth::TokenStore::exists() {
+        if !has_creds && has_codex_oauth {
             if args.is_empty() {
-                let codex_models = [
-                    "gpt-5.4",
-                    "gpt-5.3-codex",
-                    "gpt-5.3-codex-spark",
-                    "gpt-5.2",
-                    "gpt-5.2-codex",
-                    "gpt-5.1-codex",
-                    "gpt-5.1-codex-mini",
-                    "gpt-5",
-                    "gpt-5-codex",
-                    "gpt-5-codex-mini",
-                    "gpt-5-mini",
-                    "gpt-4.1",
-                    "gpt-4.1-mini",
-                    "gpt-4.1-nano",
-                    "o4-mini",
-                ];
                 let mut lines = vec![
                     "Current: gpt-5.4 on openai-codex provider (OAuth)".to_string(),
                     String::new(),
                     "Available Codex models:".to_string(),
                 ];
-                for m in &codex_models {
+                for m in CODEX_MODELS {
                     let current = if *m == "gpt-5.4" { " ← current" } else { "" };
                     lines.push(format!("    {}{}", m, current));
                 }
@@ -789,7 +797,6 @@ fn handle_model_command(args: &str) -> String {
                 return lines.join("\n");
             } else {
                 let target = args.trim();
-                // Return "Model switched:" so the caller rebuilds the agent
                 return format!("Model switched: codex-oauth → {}\nCodex OAuth", target);
             }
         }
@@ -844,6 +851,21 @@ fn handle_model_command(args: &str) -> String {
             }
         }
 
+        // Show Codex OAuth models if available
+        #[cfg(feature = "codex-oauth")]
+        if has_codex_oauth {
+            let active_marker = if creds.active == "openai-codex" {
+                " (active)"
+            } else {
+                ""
+            };
+            lines.push(format!("  openai-codex (OAuth){}:", active_marker));
+            for m in CODEX_MODELS {
+                let vision = if is_vision_model(m) { " [vision]" } else { "" };
+                lines.push(format!("    {}{}", m, vision));
+            }
+        }
+
         lines.push(String::new());
         lines.push("Switch model: /model <exact-model-name>".to_string());
         lines.push("Example: /model claude-sonnet-4-6".to_string());
@@ -878,6 +900,19 @@ fn handle_model_command(args: &str) -> String {
         match other {
             Some(p) => Some(p.name.clone()),
             None => {
+                // Check if Codex OAuth has this model
+                #[cfg(feature = "codex-oauth")]
+                if has_codex_oauth && CODEX_MODELS.contains(&target) {
+                    return format!("Model switched: codex-oauth → {}\nCodex OAuth", target);
+                }
+                // Check if the model belongs to a known but unconfigured provider
+                if let Some(needed_provider) = provider_for_model(target) {
+                    return format!(
+                        "Model '{}' requires the '{}' provider, which is not configured.\n\n\
+                         Add it with: /addkey",
+                        target, needed_provider
+                    );
+                }
                 let list = known
                     .iter()
                     .map(|m| {
@@ -2088,6 +2123,10 @@ async fn main() -> Result<()> {
             let agent_state: Arc<tokio::sync::RwLock<Option<Arc<temm1e_agent::AgentRuntime>>>> =
                 Arc::new(tokio::sync::RwLock::new(None));
 
+            // Flag: when true, the agent is running on Codex OAuth and the
+            // credentials.toml hot-reload should NOT override it.
+            let codex_oauth_active = Arc::new(AtomicBool::new(false));
+
             if let Some((ref pname, ref key, ref model)) = credentials {
                 // Filter out placeholder/invalid keys at startup
                 if is_placeholder_key(key) {
@@ -2469,6 +2508,7 @@ async fn main() -> Result<()> {
                 let channel_map_arc = channel_map.clone();
                 let primary_fallback = primary_channel.clone();
                 let agent_state_clone = agent_state.clone();
+                let codex_oauth_active_clone = codex_oauth_active.clone();
                 let memory_clone = memory.clone();
                 let tools_clone = tools.clone();
                 let custom_registry_clone = custom_tool_registry.clone();
@@ -2873,6 +2913,7 @@ async fn main() -> Result<()> {
                             let self_tx = chat_tx.clone();
 
                             let agent_state = agent_state_clone.clone();
+                            let codex_oauth_active = codex_oauth_active_clone.clone();
                             let memory = memory_clone.clone();
                             let tools_template = tools_clone.clone();
                             let custom_registry = custom_registry_clone.clone();
@@ -3194,6 +3235,7 @@ async fn main() -> Result<()> {
                                                                 max_spend,
                                                             ).with_v2_optimizations(v2_opt).with_parallel_phases(pp_opt).with_hive_enabled(hive_on).with_shared_mode(shared_mode.clone()).with_shared_memory_strategy(shared_memory_strategy.clone()).with_personality(personality.clone()).with_social(social_storage.clone(), Some(social_config_captured.clone())));
                                                             *agent_state.write().await = Some(new_agent);
+                                                            codex_oauth_active.store(true, Ordering::Relaxed);
                                                             tracing::info!(
                                                                 provider = "openai-codex",
                                                                 model = %new_model,
@@ -3238,6 +3280,7 @@ async fn main() -> Result<()> {
                                                                 max_spend,
                                                             ).with_v2_optimizations(v2_opt).with_parallel_phases(pp_opt).with_hive_enabled(hive_on).with_shared_mode(shared_mode.clone()).with_shared_memory_strategy(shared_memory_strategy.clone()).with_personality(personality.clone()).with_social(social_storage.clone(), Some(social_config_captured.clone())));
                                                             *agent_state.write().await = Some(new_agent);
+                                                            codex_oauth_active.store(false, Ordering::Relaxed);
                                                             tracing::info!(
                                                                 provider = %creds.active,
                                                                 model = %prov.model,
@@ -4990,6 +5033,10 @@ Just type a message to chat with the AI agent.",
                                         }
 
                                         // ── Hot-reload: check if credentials changed ────
+                                        // Skip when Codex OAuth is the active provider — credentials.toml
+                                        // doesn't track Codex state and would revert to the previous provider.
+                                        if !codex_oauth_active.load(Ordering::Relaxed)
+                                        {
                                         if let Some((new_name, new_keys, new_model, saved_base_url)) = load_active_provider_keys() {
                                             let current_model = agent.model().to_string();
                                             if new_model != current_model || new_keys.len() > 1 {
@@ -5061,6 +5108,7 @@ Just type a message to chat with the AI agent.",
                                                 }
                                             }
                                         }
+                                        } // end codex_oauth_active guard
 
                                         // ── Hot-reload: check if MCP tools changed ────
                                         #[cfg(feature = "mcp")]
