@@ -139,6 +139,7 @@ mod tests {
             workspace_path: std::path::PathBuf::from("/tmp"),
             session_id: "test-user".into(),
             chat_id: "test-chat".into(),
+            read_tracker: None,
         }
     }
 

@@ -97,6 +97,9 @@ impl CoreRuntime {
             role: temm1e_core::types::rbac::Role::Admin,
             history: Vec::new(),
             workspace_path,
+            read_tracker: std::sync::Arc::new(tokio::sync::RwLock::new(
+                std::collections::HashSet::new(),
+            )),
         };
 
         // Initial user message is the task

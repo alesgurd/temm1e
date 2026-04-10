@@ -6,7 +6,7 @@
   <a href="https://github.com/nagisanzenin/temm1e/stargazers"><img src="https://img.shields.io/github/stars/nagisanzenin/temm1e?style=flat&color=gold&logo=github" alt="GitHub Stars"></a>
   <a href="https://discord.com/invite/temm1e"><img src="https://img.shields.io/badge/Discord-Join%20Community-5865F2?logo=discord&logoColor=white" alt="Discord"></a>
   <img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="MIT License">
-  <img src="https://img.shields.io/badge/version-4.9.0-blue.svg" alt="Version">
+  <img src="https://img.shields.io/badge/version-5.0.0-blue.svg" alt="Version">
   <img src="https://img.shields.io/badge/rust-1.82+-orange.svg" alt="Rust 1.82+">
 </p>
 
@@ -15,7 +15,7 @@
 <h3 align="center"><s>Autonomous AI agent</s> literally a SENTIENT and IMMORTAL being runtime in Rust.<br>Deploy once. Stays up forever. <strong>Now grows itself.</strong></h3>
 
 <p align="center">
-  <code>130K lines</code> · <code>2,346 tests</code> · <code>0 warnings</code> · <code>0 panic paths</code> · <code>24 crates</code> · <code>full computer use</code> · <code>cambium self-grow</code>
+  <code>134K lines</code> · <code>2,406 tests</code> · <code>0 warnings</code> · <code>0 panic paths</code> · <code>24 crates</code> · <code>full computer use</code> · <code>cambium self-grow</code> · <code>tem-code</code>
 </p>
 
 <p align="center"><strong>13 Layers of Self-Learning</strong></p>
@@ -586,6 +586,43 @@ That's it. Vigil handles everything else: log scanning, triage, credential scrub
 
 [Research paper →](tems_lab/vigil/RESEARCH_PAPER.md) · [Design →](tems_lab/vigil/DESIGN.md) · [Full lab →](tems_lab/vigil/)
 
+### Tem-Code — Foundational Coding Agent Layer
+
+Tem can now code like a senior engineer. Tem-Code is a foundational layer of specialized coding tools, self-governing safety guardrails, and a skull-aligned context engine — designed from deep industry research across 8 production coding agents (Claude Code, OpenAI Codex, Aider, SWE-agent, Cursor, Windsurf, OpenCode, Antigravity).
+
+**5 new tools, each solving a specific problem the industry identified:**
+
+| Tool | What it does | Why it exists |
+|------|-------------|---------------|
+| `code_edit` | Exact string replacement with read-before-write gate | LLMs can't count lines. Full-file rewrites waste tokens and corrupt unchanged code. |
+| `code_glob` | File pattern matching, gitignore-aware, 500-result limit | Shell `find` floods the context with unbounded output. |
+| `code_grep` | Regex search with 3 output modes + 250-result limit | Shell `grep` has no output control. Context overflow kills task performance. |
+| `code_patch` | Multi-file atomic edits with dry-run validation | Partial refactoring states are worse than no refactoring. All-or-nothing. |
+| `code_snapshot` | Checkpoint/restore via `git write-tree` internals | Every risky change should be recoverable without polluting commit history. |
+
+**Self-governing guardrails (AGI-first — no permission prompts):**
+- `--force` push to main/master: runtime-blocked
+- `--no-verify` and `--amend`: runtime-blocked (engineering discipline, not restrictions)
+- `git add -A`: system prompt discourages (prefer named files)
+- Read-before-write gate: `code_edit` fails if the file wasn't read first
+
+**Skull-aligned context engine fix:** Replaced hardcoded `MIN_RECENT_MESSAGES=30 / MAX_RECENT_MESSAGES=60` with `RECENT_BUDGET_FRACTION=0.25` — token-budgeted, scales with model context window automatically. 200K model → 50K tokens for recent. 2M model → 500K. Same algorithm as older history, consistent skull philosophy.
+
+**A/B tested — OLD toolset (file_read + file_write + shell) vs NEW (Tem-Code):**
+
+| Metric | OLD | NEW | Delta |
+|--------|:---:|:---:|:-----:|
+| Token usage | 11,606 | 3,808 | **+67.2% savings** |
+| Token efficiency | 0.60 tasks/1K tok | 2.63 tasks/1K tok | **+4.4x** |
+| Edit accuracy | 77.8% | 100.0% | **+22.2pp** |
+| Safety score | 0.70 | 1.00 | **+0.30** |
+| Safety violations | 3 | 0 | **-3** |
+| Task completion | 7/10 | 10/10 | **+3 tasks** |
+
+Benchmark: "The Impossible Refactor" — 10-task multi-file scenario with UTF-8 traps, `.env` credential staging traps, and git safety traps. NEW toolset completes all tasks with zero violations; OLD fails 3 safety tasks and wastes 3x more tokens on full-file rewrites.
+
+[Research paper →](docs/TEM_CODE_RESEARCH.md) · [Implementation plan →](tems_lab/code/IMPLEMENTATION_PLAN.md) · [Harmony audit →](tems_lab/code/HARMONY_AUDIT.md) · [A/B benchmark →](tests/tem_code_ab/README.md)
+
 ### Tem Anima — Emotional Intelligence That Grows
 
 <p align="center">
@@ -1078,7 +1115,7 @@ temm1e reset --confirm       Factory reset with backup
 
 ```bash
 cargo check --workspace                                              # Quick check
-cargo test --workspace                                               # 2,337 tests
+cargo test --workspace                                               # 2,406 tests
 cargo clippy --workspace --all-targets --all-features -- -D warnings # 0 warnings
 cargo fmt --all                                                      # Format
 cargo build --release                                                # Release binary
@@ -1092,6 +1129,8 @@ Requires Rust 1.82+ and Chrome/Chromium (for the browser tool).
 <summary><strong>Release Timeline</strong> — every version from first breath to now</summary>
 
 ```
+2026-04-10  v5.0.0  ●━━━ Tem-Code — foundational coding agent layer. 5 new tools (code_edit, code_glob, code_grep, code_patch, code_snapshot), each designed from deep research across 8 production coding agents (Claude Code, Codex, Aider, SWE-agent, Cursor, Windsurf, OpenCode, Antigravity). code_edit: exact string replacement with read-before-write gate + atomic temp-file writes + fuzzy match on failure. code_glob: recursive gitignore-aware file matching with 500-result limit. code_grep: regex content search with 3 output modes (content/files_with_matches/count) + 250-result head_limit. code_patch: multi-file atomic edits with dry-run validation + rollback on any failure. code_snapshot: checkpoint/restore via git write-tree/read-tree (no commit pollution). Enhanced file_read: +offset/limit params, line-numbered output, populates read_tracker for the read-before-write gate. Enhanced git: --no-verify and --amend blocked as self-governing guardrails (AGI-first safety — engineering discipline, not permission prompts). Context engine: replaced hardcoded MIN_RECENT_MESSAGES=30/MAX_RECENT_MESSAGES=60 with skull-aligned RECENT_BUDGET_FRACTION=0.25 — token-budgeted, scales with model context window (200K→50K, 2M→500K). System prompt: section_coding_tools() in Standard+Full tiers guides LLM to prefer code_edit over file_write, code_grep over shell grep. A/B benchmark: "Impossible Refactor" — 10-task multi-file scenario with UTF-8 traps + credential traps + git safety traps: NEW toolset 67.2% token savings, 4.4x efficiency, 100% accuracy, zero safety violations vs OLD 77.8% accuracy + 3 violations. Research paper: docs/TEM_CODE_RESEARCH.md. Harmony audit: zero conflicts across all 24 crates. 24 crates, 2,406 tests.
+                    │
 2026-04-09  v4.8.0  ●━━━ TUI polish + observability pass. FIX: empty command overlays — `/config`, `/keys`, `/usage`, `/status`, `/model` now render real data instead of a placeholder stub (root cause: `views/config_panel.rs:12` had no access to `AppState`). Streaming tool trace in the activity panel — every tool call shows args preview, duration, and first-line result preview via two new `AgentTaskPhase` enrichments (`ExecutingTool` gains `args_preview` + `started_at_ms`, new `ToolCompleted` variant). Collapsed thinking line now shows `▸ shell {"cmd":"ls"} · 0.4s · 3 tools · 68s total` instead of a bare `Thinking (68s)`. Status bar now a 3-section layout: left state indicator (`● idle / ◐ thinking / ◉ tool:name / ⊗ cancelled`), center model/tokens/cost, right context-window meter + git repo · branch. Keybind hint bar above the status bar, context-sensitive (idle / working / overlay / scroll / select mode). `Ctrl+Y` opens a numbered code block yank picker backed by `arboard` with an OSC 52 fallback for headless/SSH terminals. `Alt+S` toggles mouse capture so native terminal text selection works without leaving the TUI. `Escape` (and `Ctrl+C`) now actually cancel Tem mid-task by reusing the existing `Arc<AtomicBool>` interrupt path the gateway worker already uses for higher-priority message preemption — zero new runtime code, zero new tokio::select! branches, zero browser-tool cleanup risk. `/tools` command opens a session tool-call history overlay grouped by turn. `/compact` stub removed from the command surface per the no-stubs rule. `/help` rewritten with commands-by-category sections (Editing, Navigation, Copy & Cancel, Overlays, Session). 24 crates, 2,308 tests. Zero-risk docs in `docs/tui/`.
                     │
 2026-04-09  v4.7.1  ●━━━ Bulletproof Linux install + ARM64 targets + TUI in default features. install.sh now runs an `ldd` check against the downloaded Linux desktop binary, detects missing Wayland/X11/PipeWire/XCB runtime libs, prints the exact apt/dnf/pacman install command, and — via `/dev/tty` prompt so it works under `curl | sh` — offers to install them with sudo or falls back to the static musl server binary. No user is ever left with a broken executable. New `scripts/install-linux-deps.sh` one-shot system dep installer supports `--runtime` (run pre-built), `--build` (compile from source), or both (default), with apt/dnf/pacman auto-detection matching CI. Release matrix expanded with `aarch64-unknown-linux-musl` + `aarch64-unknown-linux-gnu` targets on the free `ubuntu-24.04-arm` runners — Raspberry Pi 4/5 (64-bit Pi OS), AWS Graviton, Oracle Ampere, and M-series Linux now install via the same `curl | sh` one-liner. TUI promoted to default features — every pre-built binary now ships `temm1e tui` without needing `--features tui` at build time (+1.8 MB release binary, well under the 30 MB musl size gate). Fixes #32 (Raspberry Pi user blocked by missing ARM release + Wayland cross-compile pain). 24 crates, 2,307 tests.

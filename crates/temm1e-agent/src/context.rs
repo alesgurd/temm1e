@@ -31,11 +31,14 @@ use crate::learning;
 use crate::prompt_optimizer::build_tiered_system_prompt;
 use crate::runtime::model_supports_vision;
 
-/// Minimum number of recent messages to always keep in context.
-const MIN_RECENT_MESSAGES: usize = 30;
+/// Fraction of total context budget allocated to recent conversation history.
+/// Skull-aligned: scales with model context window automatically.
+/// 200K model → 50K tokens, 128K → 32K, 2M → 500K.
+const RECENT_BUDGET_FRACTION: f32 = 0.25;
 
-/// Maximum number of recent messages to keep before applying budget.
-const MAX_RECENT_MESSAGES: usize = 60;
+/// Absolute minimum: always keep last 2 messages (current query + response).
+/// Ensures the current user query is never dropped regardless of budget.
+const MIN_RECENT_MESSAGES: usize = 2;
 
 /// Fraction of total budget reserved for memory search results.
 const MEMORY_BUDGET_FRACTION: f32 = 0.15;
@@ -204,17 +207,36 @@ pub async fn build_context(
     // the DONE Definition Engine. They will be included via the recent
     // messages or history pass, so we don't double-count them here.
 
-    // ── Category 4: Recent messages (always kept) ──────────────────
+    // ── Category 4: Recent messages (token-budgeted, skull-aligned) ──
+    // v5.0: Dynamic budget fraction replaces hardcoded message counts.
+    // Scales with model context window: 200K→50K, 128K→32K, 2M→500K.
     let history = &session.history;
+    let recent_budget = ((budget as f32) * RECENT_BUDGET_FRACTION) as usize;
 
-    // Determine how many recent messages to keep (at least MIN, up to MAX)
-    let recent_count = history
-        .len()
-        .min(MAX_RECENT_MESSAGES)
-        .max(history.len().min(MIN_RECENT_MESSAGES));
-    let recent_start = history.len().saturating_sub(recent_count);
-    let recent_messages: Vec<ChatMessage> = history[recent_start..].to_vec();
-    let recent_tokens: usize = recent_messages.iter().map(estimate_message_tokens).sum();
+    // Walk backward from newest, keeping atomic turns (tool_use + tool_result) together.
+    let all_turns = group_into_turns(history);
+    let mut recent_indices: Vec<usize> = Vec::new();
+    let mut recent_tokens: usize = 0;
+
+    for turn in all_turns.iter().rev() {
+        let turn_tokens: usize = turn
+            .indices
+            .iter()
+            .map(|&i| estimate_message_tokens(&history[i]))
+            .sum();
+        if recent_tokens + turn_tokens > recent_budget
+            && recent_indices.len() >= MIN_RECENT_MESSAGES
+        {
+            break;
+        }
+        recent_tokens += turn_tokens;
+        recent_indices.extend_from_slice(&turn.indices);
+    }
+    recent_indices.sort_unstable();
+
+    let recent_messages: Vec<ChatMessage> =
+        recent_indices.iter().map(|&i| history[i].clone()).collect();
+    let recent_start = recent_indices.first().copied().unwrap_or(history.len());
 
     let available_after_fixed_and_recent =
         budget.saturating_sub(fixed_tokens + recent_tokens + blueprint_tokens_used);

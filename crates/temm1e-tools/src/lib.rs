@@ -9,6 +9,11 @@ pub mod browser_pool;
 #[cfg(feature = "browser")]
 pub mod browser_session;
 mod check_messages;
+mod code_edit;
+mod code_glob;
+mod code_grep;
+mod code_patch;
+mod code_snapshot;
 pub mod credential_scrub;
 pub mod custom_tools;
 #[cfg(feature = "desktop-control")]
@@ -33,6 +38,11 @@ pub use browser::BrowserTool;
 #[cfg(feature = "browser")]
 pub use browser_pool::BrowserPool;
 pub use check_messages::{CheckMessagesTool, PendingMessages};
+pub use code_edit::CodeEditTool;
+pub use code_glob::CodeGlobTool;
+pub use code_grep::CodeGrepTool;
+pub use code_patch::CodePatchTool;
+pub use code_snapshot::CodeSnapshotTool;
 pub use custom_tools::{CustomToolRegistry, SelfCreateTool};
 pub use file::{FileListTool, FileReadTool, FileWriteTool};
 pub use git::GitTool;
@@ -84,6 +94,12 @@ pub fn create_tools(
         tools.push(Arc::new(FileReadTool::new()));
         tools.push(Arc::new(FileWriteTool::new()));
         tools.push(Arc::new(FileListTool::new()));
+        // Tem-Code v5.0: Enhanced coding tools
+        tools.push(Arc::new(CodeEditTool::new()));
+        tools.push(Arc::new(CodeGlobTool::new()));
+        tools.push(Arc::new(CodeGrepTool::new()));
+        tools.push(Arc::new(CodePatchTool::new()));
+        tools.push(Arc::new(CodeSnapshotTool::new()));
     }
 
     if config.git {
@@ -188,6 +204,12 @@ pub fn create_tools_with_browser(
         tools.push(Arc::new(FileReadTool::new()));
         tools.push(Arc::new(FileWriteTool::new()));
         tools.push(Arc::new(FileListTool::new()));
+        // Tem-Code v5.0: Enhanced coding tools
+        tools.push(Arc::new(CodeEditTool::new()));
+        tools.push(Arc::new(CodeGlobTool::new()));
+        tools.push(Arc::new(CodeGrepTool::new()));
+        tools.push(Arc::new(CodePatchTool::new()));
+        tools.push(Arc::new(CodeSnapshotTool::new()));
     }
 
     if config.git {

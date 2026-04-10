@@ -49,6 +49,11 @@ pub struct ToolContext {
     pub workspace_path: std::path::PathBuf,
     pub session_id: String,
     pub chat_id: String,
+    /// Tracks which files have been read in this session.
+    /// Used by code_edit to enforce read-before-write gate.
+    /// None for non-coding contexts (backwards compatible).
+    pub read_tracker:
+        Option<std::sync::Arc<tokio::sync::RwLock<std::collections::HashSet<std::path::PathBuf>>>>,
 }
 
 /// Tool trait — agent capabilities like shell, file ops, browser, etc.
