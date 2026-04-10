@@ -269,6 +269,7 @@ mod tests {
             workspace_path: std::path::PathBuf::from("/tmp"),
             session_id: "test".to_string(),
             chat_id: "test".to_string(),
+            read_tracker: None,
         };
         let input = ToolInput {
             name: "mcp_manage".to_string(),
@@ -287,6 +288,7 @@ mod tests {
             workspace_path: std::path::PathBuf::from("/tmp"),
             session_id: "test".to_string(),
             chat_id: "test".to_string(),
+            read_tracker: None,
         };
         let input = ToolInput {
             name: "mcp_manage".to_string(),
@@ -305,6 +307,7 @@ mod tests {
             workspace_path: std::path::PathBuf::from("/tmp"),
             session_id: "test".to_string(),
             chat_id: "test".to_string(),
+            read_tracker: None,
         };
         let input = ToolInput {
             name: "mcp_manage".to_string(),

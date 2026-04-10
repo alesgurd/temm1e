@@ -105,6 +105,9 @@ impl SessionManager {
             role: temm1e_core::types::rbac::Role::Admin,
             history: Vec::new(),
             workspace_path: std::env::current_dir().unwrap_or_else(|_| "/tmp".into()),
+            read_tracker: std::sync::Arc::new(tokio::sync::RwLock::new(
+                std::collections::HashSet::new(),
+            )),
         }
     }
 
@@ -299,6 +302,9 @@ mod tests {
             role: temm1e_core::types::rbac::Role::Admin,
             history: Vec::new(),
             workspace_path: std::path::PathBuf::from("/tmp"),
+            read_tracker: std::sync::Arc::new(tokio::sync::RwLock::new(
+                std::collections::HashSet::new(),
+            )),
         };
 
         mgr.update_session(session).await;

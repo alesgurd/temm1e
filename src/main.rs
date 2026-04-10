@@ -4738,6 +4738,7 @@ Just type a message to chat with the AI agent.",
                                             role: user_role,
                                             history: persistent_history.clone(),
                                             workspace_path: workspace_path.clone(),
+                                            read_tracker: std::sync::Arc::new(tokio::sync::RwLock::new(std::collections::HashSet::new())),
                                         };
 
                                         // ── Early reply channel for LLM classifier ────
@@ -4906,6 +4907,7 @@ Just type a message to chat with the AI agent.",
                                                                             role: temm1e_core::types::rbac::Role::Admin,
                                                                             history: vec![],
                                                                             workspace_path: std::path::PathBuf::from("."),
+                                                                            read_tracker: std::sync::Arc::new(tokio::sync::RwLock::new(std::collections::HashSet::new())),
                                                                         };
                                                                         match mini.process_message(&mini_msg, &mut s, None, None, None, None, None).await {
                                                                             Ok((r, u)) => Ok(temm1e_hive::worker::TaskResult {
@@ -7029,6 +7031,9 @@ Just type a message to chat with the AI agent.",
                         role: temm1e_core::types::rbac::Role::Admin,
                         history: history.clone(),
                         workspace_path: workspace.clone(),
+                        read_tracker: std::sync::Arc::new(tokio::sync::RwLock::new(
+                            std::collections::HashSet::new(),
+                        )),
                     };
 
                     // Early reply channel for LLM classifier (order acknowledgments)

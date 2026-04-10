@@ -196,6 +196,9 @@ pub async fn spawn_agent(
                 role: temm1e_core::types::rbac::Role::Admin,
                 history: current_history.clone(),
                 workspace_path: workspace.clone(),
+                read_tracker: std::sync::Arc::new(tokio::sync::RwLock::new(
+                    std::collections::HashSet::new(),
+                )),
             };
 
             // Create early reply channel for classifier acknowledgments

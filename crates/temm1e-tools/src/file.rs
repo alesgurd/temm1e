@@ -7,6 +7,9 @@ use temm1e_core::{PathAccess, Tool, ToolContext, ToolDeclarations, ToolInput, To
 /// Maximum file read size (32 KB — keeps tool output within token budget).
 const MAX_READ_SIZE: usize = 32 * 1024;
 
+/// Default line limit for file_read (matches industry standard).
+const DEFAULT_LINE_LIMIT: usize = 2000;
+
 #[derive(Default)]
 pub struct FileReadTool;
 
@@ -23,7 +26,8 @@ impl Tool for FileReadTool {
     }
 
     fn description(&self) -> &str {
-        "Read the contents of a file. Returns the text content. \
+        "Read the contents of a file with line numbers. Supports offset and limit \
+         for reading specific sections of large files. Returns line-numbered content. \
          Paths are relative to the workspace directory."
     }
 
@@ -34,6 +38,14 @@ impl Tool for FileReadTool {
                 "path": {
                     "type": "string",
                     "description": "File path to read (relative to workspace or absolute)"
+                },
+                "offset": {
+                    "type": "integer",
+                    "description": "Start line number (1-indexed, default: 1)"
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum lines to return (default: 2000)"
                 }
             },
             "required": ["path"]
@@ -59,16 +71,60 @@ impl Tool for FileReadTool {
             .and_then(|v| v.as_str())
             .ok_or_else(|| Temm1eError::Tool("Missing required parameter: path".into()))?;
 
+        let offset = input
+            .arguments
+            .get("offset")
+            .and_then(|v| v.as_u64())
+            .map(|v| v.max(1) as usize)
+            .unwrap_or(1);
+
+        let limit = input
+            .arguments
+            .get("limit")
+            .and_then(|v| v.as_u64())
+            .map(|v| v as usize)
+            .unwrap_or(DEFAULT_LINE_LIMIT);
+
         let path = resolve_path(path_str, &ctx.workspace_path);
 
         match tokio::fs::read_to_string(&path).await {
-            Ok(mut content) => {
-                if content.len() > MAX_READ_SIZE {
-                    content.truncate(MAX_READ_SIZE);
-                    content.push_str("\n... [file truncated]");
+            Ok(content) => {
+                // Track this read for the read-before-write gate
+                if let Some(ref tracker) = ctx.read_tracker {
+                    tracker.write().await.insert(path.clone());
                 }
+
+                let lines: Vec<&str> = content.lines().collect();
+                let total_lines = lines.len();
+
+                // Apply offset (1-indexed) and limit
+                let start = (offset - 1).min(total_lines);
+                let end = (start + limit).min(total_lines);
+                let selected = &lines[start..end];
+
+                // Format with line numbers
+                let mut output = String::new();
+                for (i, line) in selected.iter().enumerate() {
+                    let line_num = start + i + 1;
+                    output.push_str(&format!("{}\t{}\n", line_num, line));
+                }
+
+                // Check byte size limit
+                if output.len() > MAX_READ_SIZE {
+                    output.truncate(MAX_READ_SIZE);
+                    output.push_str("\n... [output truncated at 32KB]");
+                }
+
+                // Add metadata if partial read
+                if end < total_lines {
+                    output.push_str(&format!(
+                        "\n[Showing lines {}-{} of {} total]",
+                        offset, end, total_lines
+                    ));
+                }
+
                 Ok(ToolOutput {
-                    content,
+                    content: output,
                     is_error: false,
                 })
             }
@@ -256,7 +312,7 @@ impl Tool for FileListTool {
 }
 
 /// Resolve a path string relative to the workspace directory.
-fn resolve_path(path_str: &str, workspace: &std::path::Path) -> std::path::PathBuf {
+pub(crate) fn resolve_path(path_str: &str, workspace: &std::path::Path) -> std::path::PathBuf {
     // Expand ~ to user's home directory (works on macOS, Linux, and containers)
     if path_str.starts_with("~/") || path_str == "~" {
         let suffix = if path_str.len() > 2 {

@@ -199,6 +199,10 @@ impl<'a> SystemPromptBuilder<'a> {
                 }
                 sections.push(self.section_self_correction());
                 sections.push(self.section_lambda_memory());
+                // Tem-Code v5.0: coding tool preferences + git best practices
+                if self.has_file_tools() {
+                    sections.push(self.section_coding_tools());
+                }
             }
             PromptTier::Full => {
                 // Full: everything in Standard + planning protocol
@@ -221,6 +225,10 @@ impl<'a> SystemPromptBuilder<'a> {
                 }
                 sections.push(self.section_self_correction());
                 sections.push(self.section_lambda_memory());
+                // Tem-Code v5.0: coding tool preferences + git best practices
+                if self.has_file_tools() {
+                    sections.push(self.section_coding_tools());
+                }
                 sections.push(self.section_planning_protocol());
             }
         }
@@ -429,6 +437,32 @@ impl<'a> SystemPromptBuilder<'a> {
                 "SKIP for trivial tasks, obvious outcomes, or when no actionable lesson exists."
             )
             .to_string(),
+        }
+    }
+
+    /// Tem-Code v5.0: coding tool preferences and git best practices.
+    fn section_coding_tools(&self) -> PromptSection {
+        PromptSection {
+            name: "coding_tools",
+            text: "\
+## Coding Tools\n\
+When working with code, prefer these specialized tools over shell equivalents:\n\
+- `file_read` — reads files with line numbers + offset/limit. Prefer over `shell` cat/head/tail.\n\
+- `code_edit` — exact string replacement (read-before-edit enforced). Prefer over `file_write` for modifying existing files.\n\
+- `code_glob` — find files by pattern (gitignore-aware, result-limited). Prefer over `shell` find/ls.\n\
+- `code_grep` — search file contents (regex, output modes, result-limited). Prefer over `shell` grep/rg.\n\
+- `code_patch` — multi-file atomic edits (validates all before applying). Use for refactoring.\n\
+- `code_snapshot` — checkpoint/restore file state via git internals. Use before risky changes.\n\n\
+`code_edit` over `file_write`: safer (read-before-edit enforced, atomic writes), more token-efficient \
+(only the changed portion is transmitted, not the entire file).\n\n\
+## Git Best Practices\n\
+- Work on feature branches, not main/master.\n\
+- Commit with descriptive messages focused on WHY not WHAT.\n\
+- Stage specific files by name (use `git add` with files array, not `all: true`).\n\
+- Run tests before pushing.\n\
+- Create new commits rather than amending.\n\
+- Force push to protected branches is blocked. --no-verify and --amend are blocked by default."
+                .to_string(),
         }
     }
 
