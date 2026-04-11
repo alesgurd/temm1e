@@ -39,12 +39,15 @@ pub enum MemoryHealthStatus {
 pub struct FailoverConfig {
     /// Number of consecutive failures before a repair attempt is triggered.
     pub max_consecutive_failures: u32,
+    /// Maximum entries in the in-memory fallback cache (prevents unbounded growth).
+    pub max_cache_entries: usize,
 }
 
 impl Default for FailoverConfig {
     fn default() -> Self {
         Self {
             max_consecutive_failures: 3,
+            max_cache_entries: 1024,
         }
     }
 }
@@ -280,6 +283,17 @@ impl Memory for ResilientMemory {
         {
             let mut state = self.state.write().await;
             state.cache.insert(entry.id.clone(), entry.clone());
+            // Evict oldest entry if cache exceeds limit (prevents unbounded growth)
+            if state.cache.len() > self.config.max_cache_entries {
+                if let Some(oldest_id) = state
+                    .cache
+                    .values()
+                    .min_by_key(|e| &e.timestamp)
+                    .map(|e| e.id.clone())
+                {
+                    state.cache.remove(&oldest_id);
+                }
+            }
         }
 
         match self.primary.store(entry).await {
@@ -854,6 +868,7 @@ mod tests {
         let (handle, primary) = create_fake();
         let config = FailoverConfig {
             max_consecutive_failures: 10, // high threshold so repair isn't triggered
+            ..Default::default()
         };
         let resilient = ResilientMemory::with_config(primary, config);
 
@@ -873,6 +888,7 @@ mod tests {
         let (handle, primary) = create_fake();
         let config = FailoverConfig {
             max_consecutive_failures: 10,
+            ..Default::default()
         };
         let resilient = ResilientMemory::with_config(primary, config);
 
@@ -891,6 +907,7 @@ mod tests {
         let (handle, primary) = create_fake();
         let config = FailoverConfig {
             max_consecutive_failures: 2,
+            ..Default::default()
         };
         let resilient = ResilientMemory::with_config(primary, config);
 
@@ -921,6 +938,7 @@ mod tests {
         let (handle, primary) = create_fake();
         let config = FailoverConfig {
             max_consecutive_failures: 2,
+            ..Default::default()
         };
         let resilient = ResilientMemory::with_config(primary, config);
 
@@ -1056,6 +1074,7 @@ mod tests {
         let (handle, primary) = create_fake();
         let config = FailoverConfig {
             max_consecutive_failures: 5,
+            ..Default::default()
         };
         let resilient = ResilientMemory::with_config(primary, config);
 
