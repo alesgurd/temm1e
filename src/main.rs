@@ -1366,7 +1366,15 @@ async fn main() -> Result<()> {
 
     // Set up tracing: stdout + persistent log file
     let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+        .unwrap_or_else(|_| {
+            tracing_subscriber::EnvFilter::new(
+                // Suppress noisy chromiumoxide WS deserialization errors
+                // (known upstream issue, not actionable). Setting to `off`
+                // hides them under the default filter; they reappear when
+                // RUST_LOG is set explicitly (e.g. RUST_LOG=debug).
+                "info,chromiumoxide::conn=off,chromiumoxide::handler=off",
+            )
+        });
     let file_appender = temm1e_observable::file_logger::create_file_appender();
     let (file_writer, _log_guard) = tracing_appender::non_blocking(file_appender);
 
