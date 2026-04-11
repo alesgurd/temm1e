@@ -165,9 +165,15 @@ clean: ## Remove build artifacts
 clean-docker: ## Remove Docker images
 	$(DOCKER) rmi $(IMAGE_NAME):latest $(IMAGE_NAME):$(IMAGE_TAG) 2>/dev/null || true
 
+INSTALL_DIR := $(HOME)/.local/bin
+
 .PHONY: install
-install: build-release ## Install binary to ~/.cargo/bin
-	cp target/release/$(BINARY) $(HOME)/.cargo/bin/$(BINARY)
+install: ## Build release with TUI, sign, and install to ~/.local/bin
+	$(CARGO) build --release --bin $(BINARY) --features tui
+	@mkdir -p $(INSTALL_DIR)
+	cp target/release/$(BINARY) $(INSTALL_DIR)/$(BINARY)
+	codesign -s - --force $(INSTALL_DIR)/$(BINARY)
+	@echo "Installed $(INSTALL_DIR)/$(BINARY) ($(VERSION))"
 
 .PHONY: loc
 loc: ## Count lines of code
