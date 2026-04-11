@@ -332,6 +332,9 @@ fn is_read_only_tool(name: &str) -> bool {
 /// Dangerous shell command patterns that should be rejected.
 const BLOCKED_SHELL_PATTERNS: &[&str] = &[
     "rm -rf /",
+    "rm -fr /",
+    "rm -r -f /",
+    "rm --recursive --force /",
     "mkfs.",
     "dd if=",
     "> /dev/sd",
@@ -374,6 +377,7 @@ pub async fn execute_tool(
         workspace_path: session.workspace_path.clone(),
         session_id: session.session_id.clone(),
         chat_id: session.chat_id.clone(),
+        read_tracker: Some(session.read_tracker.clone()),
     };
 
     let input = ToolInput {
@@ -786,6 +790,9 @@ mod tests {
             role: temm1e_core::types::rbac::Role::Admin,
             history: Vec::new(),
             workspace_path: workspace,
+            read_tracker: std::sync::Arc::new(tokio::sync::RwLock::new(
+                std::collections::HashSet::new(),
+            )),
         };
 
         let result = validate_sandbox(&tool, &session);
@@ -812,6 +819,9 @@ mod tests {
             role: temm1e_core::types::rbac::Role::Admin,
             history: Vec::new(),
             workspace_path: workspace,
+            read_tracker: std::sync::Arc::new(tokio::sync::RwLock::new(
+                std::collections::HashSet::new(),
+            )),
         };
 
         let result = validate_sandbox(&tool, &session);
@@ -842,6 +852,9 @@ mod tests {
             role: temm1e_core::types::rbac::Role::Admin,
             history: Vec::new(),
             workspace_path: workspace,
+            read_tracker: std::sync::Arc::new(tokio::sync::RwLock::new(
+                std::collections::HashSet::new(),
+            )),
         };
 
         let result = validate_sandbox(&tool, &session);
@@ -861,6 +874,9 @@ mod tests {
             role: temm1e_core::types::rbac::Role::Admin,
             history: Vec::new(),
             workspace_path: tmp.path().to_path_buf(),
+            read_tracker: std::sync::Arc::new(tokio::sync::RwLock::new(
+                std::collections::HashSet::new(),
+            )),
         };
 
         let result = validate_sandbox(&tool, &session);
@@ -890,6 +906,9 @@ mod tests {
             role: temm1e_core::types::rbac::Role::Admin,
             history: Vec::new(),
             workspace_path: workspace,
+            read_tracker: std::sync::Arc::new(tokio::sync::RwLock::new(
+                std::collections::HashSet::new(),
+            )),
         };
 
         let result = validate_sandbox(&tool, &session);
@@ -916,6 +935,9 @@ mod tests {
             role: temm1e_core::types::rbac::Role::Admin,
             history: Vec::new(),
             workspace_path: workspace,
+            read_tracker: std::sync::Arc::new(tokio::sync::RwLock::new(
+                std::collections::HashSet::new(),
+            )),
         };
 
         let result = validate_sandbox(&tool, &session);
@@ -943,6 +965,9 @@ mod tests {
             role: temm1e_core::types::rbac::Role::Admin,
             history: Vec::new(),
             workspace_path: workspace,
+            read_tracker: std::sync::Arc::new(tokio::sync::RwLock::new(
+                std::collections::HashSet::new(),
+            )),
         };
 
         let result = validate_sandbox(&tool, &session);
@@ -973,6 +998,9 @@ mod tests {
             role: temm1e_core::types::rbac::Role::Admin,
             history: Vec::new(),
             workspace_path: workspace,
+            read_tracker: std::sync::Arc::new(tokio::sync::RwLock::new(
+                std::collections::HashSet::new(),
+            )),
         };
 
         let result = validate_sandbox(&tool, &session);
@@ -1002,6 +1030,9 @@ mod tests {
             role: temm1e_core::types::rbac::Role::Admin,
             history: Vec::new(),
             workspace_path: workspace,
+            read_tracker: std::sync::Arc::new(tokio::sync::RwLock::new(
+                std::collections::HashSet::new(),
+            )),
         };
 
         let result = validate_sandbox(&tool, &session);

@@ -6,7 +6,7 @@
   <a href="https://github.com/nagisanzenin/temm1e/stargazers"><img src="https://img.shields.io/github/stars/nagisanzenin/temm1e?style=flat&color=gold&logo=github" alt="GitHub Stars"></a>
   <a href="https://discord.com/invite/temm1e"><img src="https://img.shields.io/badge/Discord-Join%20Community-5865F2?logo=discord&logoColor=white" alt="Discord"></a>
   <img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="MIT License">
-  <img src="https://img.shields.io/badge/version-4.8.0-blue.svg" alt="Version">
+  <img src="https://img.shields.io/badge/version-5.1.0-blue.svg" alt="Version">
   <img src="https://img.shields.io/badge/rust-1.82+-orange.svg" alt="Rust 1.82+">
 </p>
 
@@ -15,21 +15,44 @@
 <h3 align="center"><s>Autonomous AI agent</s> literally a SENTIENT and IMMORTAL being runtime in Rust.<br>Deploy once. Stays up forever. <strong>Now grows itself.</strong></h3>
 
 <p align="center">
-  <code>126K lines</code> · <code>2,308 tests</code> · <code>0 warnings</code> · <code>0 panic paths</code> · <code>24 crates</code> · <code>full computer use</code> · <code>cambium self-grow</code>
+  <code>135K lines</code> · <code>2,406 tests</code> · <code>0 warnings</code> · <code>0 panic paths</code> · <code>24 crates</code> · <code>full computer use</code> · <code>cambium self-grow</code> · <code>tem-code</code>
 </p>
 
-<p align="center"><strong>Powered by 13 layers of self-learning mechanism + 1 self-growing mechanism</strong></p>
+<p align="center"><strong>13 Layers of Self-Learning</strong></p>
 <p align="center">
-  <a href="tems_lab/LAMBDA_MEMORY.md">Lambda Memory</a> · <a href="tems_lab/ARTIFACT_VALUE_FUNCTION.md#cross-task-learnings">Cross-Task Learnings</a> · <a href="docs/design/BLUEPRINT_SYSTEM.md">Blueprints</a> · <a href="tems_lab/eigen/DESIGN.md">Eigen-Tune</a> · <a href="tems_lab/ARTIFACT_VALUE_FUNCTION.md#tem-anima--user-profile-learning">Tem Anima</a> · <a href="tems_lab/ARTIFACT_VALUE_FUNCTION.md#recall-reinforcement">Recall Reinforcement</a> · <a href="tems_lab/ARTIFACT_VALUE_FUNCTION.md#memory-dedup">Memory Dedup</a> · <a href="tems_lab/ARTIFACT_VALUE_FUNCTION.md#core-stats">Core Stats</a> · <a href="tems_lab/ARTIFACT_VALUE_FUNCTION.md#tool-reliability">Tool Reliability</a> · <a href="tems_lab/ARTIFACT_VALUE_FUNCTION.md#classification-feedback">Classification Feedback</a> · <a href="tems_lab/ARTIFACT_VALUE_FUNCTION.md#skill-tracking">Skill Tracking</a> · <a href="tems_lab/ARTIFACT_VALUE_FUNCTION.md#prompt-tier-tracking">Prompt Tier Tracking</a> · <a href="tems_lab/ARTIFACT_VALUE_FUNCTION.md#consciousness-efficacy">Consciousness Efficacy</a>
+  <strong><a href="tems_lab/LAMBDA_MEMORY.md">Lambda Memory</a></strong> &mdash; episodic facts that fade, not disappear<br>
+  <strong><a href="tems_lab/ARTIFACT_VALUE_FUNCTION.md#cross-task-learnings">Cross-Task Learnings</a></strong> &mdash; strategic lessons that persist across tasks<br>
+  <strong><a href="docs/design/BLUEPRINT_SYSTEM.md">Blueprints</a></strong> &mdash; proven multi-step procedures with fitness scores<br>
+  <strong><a href="tems_lab/ARTIFACT_VALUE_FUNCTION.md#tem-anima--user-profile-learning">Tem Anima</a></strong> &mdash; user personality and communication style profiling<br>
+  <strong><a href="tems_lab/ARTIFACT_VALUE_FUNCTION.md#recall-reinforcement">Recall Reinforcement</a></strong> &mdash; memories used more often become harder to forget<br>
+  <strong><a href="tems_lab/ARTIFACT_VALUE_FUNCTION.md#memory-dedup">Memory Dedup</a></strong> &mdash; near-duplicate memories merge automatically<br>
+  <strong><a href="tems_lab/ARTIFACT_VALUE_FUNCTION.md#core-stats">Core Stats</a></strong> &mdash; sub-agent reliability tracked per specialist core<br>
+  <strong><a href="tems_lab/ARTIFACT_VALUE_FUNCTION.md#tool-reliability">Tool Reliability</a></strong> &mdash; tool success rates by task type over 30-day windows<br>
+  <strong><a href="tems_lab/ARTIFACT_VALUE_FUNCTION.md#classification-feedback">Classification Feedback</a></strong> &mdash; empirical cost and round priors per category<br>
+  <strong><a href="tems_lab/ARTIFACT_VALUE_FUNCTION.md#skill-tracking">Skill Tracking</a></strong> &mdash; which skills are actually used vs sitting idle<br>
+  <strong><a href="tems_lab/ARTIFACT_VALUE_FUNCTION.md#prompt-tier-tracking">Prompt Tier Tracking</a></strong> &mdash; cost-effectiveness per prompt complexity tier<br>
+  <strong><a href="tems_lab/ARTIFACT_VALUE_FUNCTION.md#consciousness-efficacy">Consciousness Efficacy</a></strong> &mdash; continuous A/B test of the consciousness observer<br>
+  <strong><a href="tems_lab/eigen/DESIGN.md">Eigen-Tune Collection</a></strong> &mdash; training pairs captured from every LLM call<br>
   <br>
-  <sub>13 self-learning loops scored by <a href="tems_lab/ARTIFACT_VALUE_FUNCTION.md"><code>V(a,t) = Q &times; R &times; U</code></a> — the unified artifact value function</sub>
+  <sub>All 13 loops scored by <a href="tems_lab/ARTIFACT_VALUE_FUNCTION.md"><code>V(a,t) = Q &times; R &times; U</code></a> &mdash; the unified artifact value function</sub>
 </p>
 
-<p align="center"><strong>Tem Cambium</strong> &mdash; the 1 self-<em>growing</em> mechanism: Tem writes its own Rust code that compiles, lints clean, and passes tests</p>
+<p align="center"><strong>1 Self-Distillation &amp; Self-Finetune Layer</strong></p>
 <p align="center">
-  <a href="tems_lab/cambium/CAMBIUM_RESEARCH_PAPER.md">Research Paper</a> · <a href="docs/lab/cambium/THEORY.md">Theory</a>
+  <strong><a href="tems_lab/eigen/SETUP.md">Eigen-Tune</a></strong> &mdash; trains a local model from conversations, graduates through statistical gates (Wilson 99% CI + SPRT + CUSUM), serves locally &mdash; zero added LLM cost
   <br>
-  <sub>Heartwood (immutable kernel) · Cambium (growth layer) · Bark (runtime surface) · Rings (history). Toggle with <code>/cambium on</code> · <code>/cambium off</code></sub>
+  <a href="tems_lab/eigen/DESIGN.md">Design</a> &middot; <a href="tems_lab/eigen/SETUP.md">Setup</a> &middot; <a href="tems_lab/eigen/LOCAL_ROUTING_SAFETY.md">Safety Chain</a>
+  <br>
+  <sub>Collect &rarr; Score &rarr; Curate &rarr; Train &rarr; Evaluate &rarr; Shadow &rarr; Monitor. Double opt-in: <code>[eigentune] enabled = true</code> + <code>enable_local_routing = true</code></sub>
+</p>
+
+<p align="center"><strong>1 Self-Growing Mechanism</strong></p>
+<p align="center">
+  <strong><a href="tems_lab/cambium/CAMBIUM_RESEARCH_PAPER.md">Tem Cambium</a></strong> &mdash; Tem writes its own Rust code that compiles, lints clean, and passes tests
+  <br>
+  <a href="tems_lab/cambium/CAMBIUM_RESEARCH_PAPER.md">Research Paper</a> &middot; <a href="docs/lab/cambium/THEORY.md">Theory</a>
+  <br>
+  <sub>Heartwood (immutable kernel) &middot; Cambium (growth layer) &middot; Bark (runtime surface) &middot; Rings (history). Toggle with <code>/cambium on</code> &middot; <code>/cambium off</code></sub>
 </p>
 
 ---
@@ -267,6 +290,10 @@ v1 treats every message the same. v2 classifies each message into a complexity t
 
 ### Many Tems — Swarm Intelligence
 
+<p align="center">
+  <img src="assets/tem-swarm-overview.png" alt="Many Tems Swarm Intelligence Overview" width="100%">
+</p>
+
 What if complex tasks could be split across multiple Tems working in parallel? Many Tems is a stigmergic swarm intelligence runtime — workers coordinate through time-decaying scent signals and a shared Den (SQLite), not LLM-to-LLM chat. Zero coordination tokens.
 
 The Alpha (coordinator) decomposes complex orders into a task DAG. Tems claim tasks via atomic SQLite transactions, execute with task-scoped context (no history accumulation), and emit scent signals that guide other Tems.
@@ -287,23 +314,95 @@ Enabled by default in v3.0.0. Disable: `[pack] enabled = false`. Invisible for s
 
 ### Eigen-Tune — Self-Tuning Knowledge Distillation
 
-Every LLM call is a training example being thrown away. Eigen-Tune captures them, scores quality from user behavior, trains a local model, and graduates it through statistical gates — zero added LLM cost, zero user intervention beyond `/eigentune on`.
+<p align="center">
+  <img src="assets/tem-eigentune-overview.png" alt="Eigen-Tune Distillation Overview" width="100%">
+</p>
 
-**Proven on Apple M2 with real fine-tuning:**
+Every LLM call is a training example being thrown away. Eigen-Tune captures them, scores quality from user behavior, trains a local model, and graduates it through statistical gates — zero added LLM cost.
 
-| Metric | Result |
-|--------|:------:|
-| Base model (SmolLM2-135M) | 72°F = "150°C" (wrong) |
-| **Fine-tuned on 10 conversations** | **72°F = "21.2°C" (close to 22.2°C)** |
-| Training | 100 iters, 0.509 GB peak, ~28 it/sec |
-| Inference | ~200 tok/sec, 0.303 GB peak |
+**Wired into the runtime as of v4.9.0** ([INTEGRATION_PLAN](tems_lab/eigen/INTEGRATION_PLAN.md), [LOCAL_ROUTING_SAFETY](tems_lab/eigen/LOCAL_ROUTING_SAFETY.md)). **Double opt-in by design:**
+
+```toml
+[eigentune]
+enabled = true                # collect + train + evaluate + shadow (no user-facing change)
+# enable_local_routing = true # second opt-in: actually serve users from the distilled model
+```
+
+The first switch turns on data collection and the entire training/evaluation pipeline without ever changing what the user sees. Only after you've watched a tier reach `Graduated` state through `temm1e eigentune status` do you flip the second switch and let the local model serve you.
+
+**End-to-end proven on Apple M2 (Llama 3.2 1B, v4.9.0):**
+
+| Stage | Result |
+|-------|:------:|
+| Base model | `mlx-community/Llama-3.2-1B-Instruct-4bit` |
+| Training data | 20 ChatML pairs (Rust Q&A) |
+| MLX LoRA fine-tune | 20 iters, 1.59 GB peak, ~2 it/sec |
+| Val loss | 5.394 → **1.387** (73% reduction) |
+| Trainable params | 5.6M / 1.2B (0.46% LoRA) |
+| GGUF conversion | Fuse → dequantize → llama.cpp GGUF → Q4_K_M (807 MB) |
+| Ollama serving | localhost:11434, ~1589 tokens generated |
+| **Runtime routing** | **AgentRuntime → EigenTune router → local model (cloud never called)** |
 | Pipeline cost | **$0 added LLM cost** |
 
-7-stage pipeline: Collect → Score → Curate → Train → Evaluate → Shadow → Monitor. Statistical gates at every transition (SPRT, CUSUM, Wilson score 99% CI). Per-tier graduation: simple first, complex last. Cloud always the fallback.
+7-stage pipeline: Collect → Score → Curate → Train → Evaluate → Shadow → Monitor. **Seven-gate safety chain** protects local serving: master kill switch, tool-use guard (tool-bearing requests always go to cloud), Wilson 99% CI evaluation, SPRT shadow gate, CUSUM drift detection with auto-demotion, 30s timeout + automatic cloud fallback, manual emergency demote (`temm1e eigentune demote <tier>`). Per-tier graduation: simple first, complex last. **Cloud always the fallback.**
 
-[Research paper →](tems_lab/eigen/RESEARCH_PAPER.md) · [Design doc →](tems_lab/eigen/DESIGN.md) · [Full lab →](tems_lab/eigen/)
+<details>
+<summary><strong>Eigen-Tune Quick Start (User Manual)</strong></summary>
+
+**Prerequisites:** [Ollama](https://ollama.com) + one training backend (MLX on Apple Silicon, Unsloth on NVIDIA).
+
+```bash
+# 1. Install Ollama and pull the base model
+brew install ollama && ollama serve
+ollama pull llama3.2:1b          # Apple Silicon (1.3 GB)
+
+# 2. Install the training backend
+python3 -m pip install mlx-lm    # Apple Silicon (MLX)
+# OR: pip install unsloth trl datasets   # NVIDIA (Unsloth)
+
+# 3. Enable Eigen-Tune in temm1e.toml
+cat >> ~/.temm1e/temm1e.toml << 'EOF'
+[eigentune]
+enabled = true
+EOF
+
+# 4. Use Tem normally — training pairs are collected automatically
+temm1e tui
+
+# 5. Monitor progress
+temm1e eigentune status          # tier states, pair counts, training runs
+temm1e eigentune prerequisites   # check backend availability
+
+# 6. Once a tier reaches "Graduated", enable local routing
+# Add to [eigentune] section in temm1e.toml:
+#   enable_local_routing = true
+
+# 7. Emergency controls
+temm1e eigentune demote simple   # force a tier back to Collecting
+```
+
+**Tier progression:** Collecting (data) → Training (LoRA fine-tune) → Evaluating (holdout accuracy) → Shadowing (SPRT A/B test) → Graduated (local serving) → Monitor (CUSUM drift detection).
+
+**Hardware requirements:**
+
+| Platform | Backend | Min RAM | Base Model |
+|----------|---------|---------|------------|
+| Apple Silicon (M1+) | MLX | 8 GB | Llama 3.2 1B (4-bit) |
+| Apple Silicon (M2+) | MLX | 16 GB | Llama 3.2 3B (4-bit) |
+| NVIDIA GPU | Unsloth | 8 GB VRAM | Llama 3.2 1B (QLoRA) |
+| CPU only | N/A | N/A | Collection only (no training) |
+
+[Full setup guide →](tems_lab/eigen/SETUP.md) · [Safety chain →](tems_lab/eigen/LOCAL_ROUTING_SAFETY.md) · [Design doc →](tems_lab/eigen/DESIGN.md)
+
+</details>
+
+[Research paper →](tems_lab/eigen/RESEARCH_PAPER.md) · [Design doc →](tems_lab/eigen/DESIGN.md) · [Setup guide →](tems_lab/eigen/SETUP.md) · [Integration plan →](tems_lab/eigen/INTEGRATION_PLAN.md) · [Safety chain →](tems_lab/eigen/LOCAL_ROUTING_SAFETY.md) · [Full lab →](tems_lab/eigen/)
 
 ### Unified Artifact Value Function — The Mathematics of Self-Learning
+
+<p align="center">
+  <img src="assets/tem-artifact-value-overview.png" alt="Unified Artifact Value Function Overview" width="100%">
+</p>
 
 Traditional ML adjusts numeric weights. TEMM1E adjusts **structured artifacts** — memories, lessons, blueprints, training pairs. The unified artifact value function scores every artifact across every self-learning subsystem:
 
@@ -328,6 +427,10 @@ Half-lives are ordered by artifact persistence: **memories < learnings < bluepri
 [Full mathematical framework →](tems_lab/ARTIFACT_VALUE_FUNCTION.md) · [Audit report →](docs/design/SELF_LEARNING_AUDIT.md)
 
 ### Tem Prowl — Web-Native Browsing with OTK Authentication
+
+<p align="center">
+  <img src="assets/tem-prowl-overview.png" alt="Tem Prowl Web Browsing Overview" width="100%">
+</p>
 
 The web is where humans live. Tem Prowl is a messaging-first web agent architecture — I browse websites autonomously behind a chat interface and report structured results back through messages. No live viewport. No shoulder-surfing. Just results.
 
@@ -499,6 +602,47 @@ That's it. Vigil handles everything else: log scanning, triage, credential scrub
 
 [Research paper →](tems_lab/vigil/RESEARCH_PAPER.md) · [Design →](tems_lab/vigil/DESIGN.md) · [Full lab →](tems_lab/vigil/)
 
+### Tem-Code — Foundational Coding Agent Layer
+
+<p align="center">
+  <img src="assets/tem-code-overview.png" alt="Tem-Code Architecture Overview" width="100%">
+</p>
+
+Tem can now code like a senior engineer. Tem-Code is a foundational layer of specialized coding tools, self-governing safety guardrails, and a skull-aligned context engine — designed from deep industry research across 8 production coding agents (Claude Code, OpenAI Codex, Aider, SWE-agent, Cursor, Windsurf, OpenCode, Antigravity).
+
+**5 new tools, each solving a specific problem the industry identified:**
+
+| Tool | What it does | Why it exists |
+|------|-------------|---------------|
+| `code_edit` | Exact string replacement with read-before-write gate | LLMs can't count lines. Full-file rewrites waste tokens and corrupt unchanged code. |
+| `code_glob` | File pattern matching, gitignore-aware, 500-result limit | Shell `find` floods the context with unbounded output. |
+| `code_grep` | Regex search with 3 output modes + 250-result limit | Shell `grep` has no output control. Context overflow kills task performance. |
+| `code_patch` | Multi-file atomic edits with dry-run validation | Partial refactoring states are worse than no refactoring. All-or-nothing. |
+| `code_snapshot` | Checkpoint/restore via `git write-tree` internals | Every risky change should be recoverable without polluting commit history. |
+
+**Self-governing guardrails (AGI-first — no permission prompts):**
+- `--force` push to main/master: runtime-blocked
+- `--no-verify` and `--amend`: runtime-blocked (engineering discipline, not restrictions)
+- `git add -A`: system prompt discourages (prefer named files)
+- Read-before-write gate: `code_edit` fails if the file wasn't read first
+
+**Skull-aligned context engine fix:** Replaced hardcoded `MIN_RECENT_MESSAGES=30 / MAX_RECENT_MESSAGES=60` with `RECENT_BUDGET_FRACTION=0.25` — token-budgeted, scales with model context window automatically. 200K model → 50K tokens for recent. 2M model → 500K. Same algorithm as older history, consistent skull philosophy.
+
+**A/B tested — OLD toolset (file_read + file_write + shell) vs NEW (Tem-Code):**
+
+| Metric | OLD | NEW | Delta |
+|--------|:---:|:---:|:-----:|
+| Token usage | 11,606 | 3,808 | **+67.2% savings** |
+| Token efficiency | 0.60 tasks/1K tok | 2.63 tasks/1K tok | **+4.4x** |
+| Edit accuracy | 77.8% | 100.0% | **+22.2pp** |
+| Safety score | 0.70 | 1.00 | **+0.30** |
+| Safety violations | 3 | 0 | **-3** |
+| Task completion | 7/10 | 10/10 | **+3 tasks** |
+
+Benchmark: "The Impossible Refactor" — 10-task multi-file scenario with UTF-8 traps, `.env` credential staging traps, and git safety traps. NEW toolset completes all tasks with zero violations; OLD fails 3 safety tasks and wastes 3x more tokens on full-file rewrites.
+
+[Research paper →](docs/TEM_CODE_RESEARCH.md) · [Implementation plan →](tems_lab/code/IMPLEMENTATION_PLAN.md) · [Harmony audit →](tems_lab/code/HARMONY_AUDIT.md) · [A/B benchmark →](tests/tem_code_ab/README.md)
+
 ### Tem Anima — Emotional Intelligence That Grows
 
 <p align="center">
@@ -668,6 +812,10 @@ Trust is **earned through track record**: 10 successful Level 3 changes graduate
 ---
 
 ## Interactive TUI
+
+<p align="center">
+  <img src="assets/tem-tui-overview.png" alt="TEMM1E Interactive TUI" width="100%">
+</p>
 
 `temm1e tui` gives you a Claude Code-level terminal experience — talk to Tem directly from your terminal with rich markdown rendering, syntax-highlighted code blocks, and real-time agent observability.
 
@@ -868,7 +1016,7 @@ temm1e-watchdog (separate binary)
 <td align="center"><strong>15 MB</strong><br><sub>Idle RAM</sub></td>
 <td align="center"><strong>31 ms</strong><br><sub>Cold start</sub></td>
 <td align="center"><strong>9.6 MB</strong><br><sub>Binary size</sub></td>
-<td align="center"><strong>2,308</strong><br><sub>Tests</sub></td>
+<td align="center"><strong>2,337</strong><br><sub>Tests</sub></td>
 <td align="center"><strong>9</strong><br><sub>AI Providers</sub></td>
 <td align="center"><strong>15</strong><br><sub>Built-in tools</sub></td>
 <td align="center"><strong>7</strong><br><sub>Channels</sub></td>
@@ -991,7 +1139,7 @@ temm1e reset --confirm       Factory reset with backup
 
 ```bash
 cargo check --workspace                                              # Quick check
-cargo test --workspace                                               # 2,308 tests
+cargo test --workspace                                               # 2,406 tests
 cargo clippy --workspace --all-targets --all-features -- -D warnings # 0 warnings
 cargo fmt --all                                                      # Format
 cargo build --release                                                # Release binary
@@ -1005,6 +1153,12 @@ Requires Rust 1.82+ and Chrome/Chromium (for the browser tool).
 <summary><strong>Release Timeline</strong> — every version from first breath to now</summary>
 
 ```
+2026-04-11  v5.1.0  ●━━━ Full Sweep 1 — Extreme Resilience. 10-phase deep scan across all 24 crates, 47 findings with 15-dimension risk matrices, 35 fixes landed at 100% confidence / 0% regression risk. P0: file tool path traversal containment (resolve_path workspace validation), UTF-8 safe split_message in Telegram/Discord/Slack (floor_char_boundary), SQLite WAL mode + busy_timeout. P1: tool output safe truncation (shell/file/web_fetch), credential scrubber +7 patterns (AWS/Stripe/Slack/GitLab/Grafana), Anthropic max_tokens from model registry, key rotation 2s cooldown, Unicode-aware token estimation (len/2 for >30% non-ASCII), BrowserPool assert to Result. P2-P4: allowlist wildcard unification, WhatsApp empty allowlist DF-16 fix, channel capacity 32 to 128, Gemini/TUI/Config safe slicing, EigenTune/MCP/Anima unwrap elimination, Telegram backoff reset, swallowed error logging, memory provenance annotations, failover search word-split AND matching, lambda store transactions, markdown atomic append, ResilientMemory cache eviction (max 1024), circuit breaker CAS, custom tool schema type normalization, OAuth chmod 600, shell denylist rm variants. Full Sweep Protocol with 9-step execution workflow documented. 24 crates, 2,406 tests.
+                    │
+2026-04-11  v5.0.1  ●━━━ Fix: temm1e update for install.sh users — detects non-git installs, self-updates via GitHub Releases API (download binary, atomic replace, user data untouched). Fix: CLI setup wizard credential format — was writing broken TOML that load_credentials_file() couldn't parse, causing key not to load on next TUI launch. Now uses save_credentials() canonical format. README: overview images for Eigen-Tune, Swarm, Artifact Value Function, Prowl, TUI, and new main banner. 24 crates, 2,406 tests.
+                    │
+2026-04-10  v5.0.0  ●━━━ Tem-Code — foundational coding agent layer. 5 new tools (code_edit, code_glob, code_grep, code_patch, code_snapshot), each designed from deep research across 8 production coding agents (Claude Code, Codex, Aider, SWE-agent, Cursor, Windsurf, OpenCode, Antigravity). code_edit: exact string replacement with read-before-write gate + atomic temp-file writes + fuzzy match on failure. code_glob: recursive gitignore-aware file matching with 500-result limit. code_grep: regex content search with 3 output modes (content/files_with_matches/count) + 250-result head_limit. code_patch: multi-file atomic edits with dry-run validation + rollback on any failure. code_snapshot: checkpoint/restore via git write-tree/read-tree (no commit pollution). Enhanced file_read: +offset/limit params, line-numbered output, populates read_tracker for the read-before-write gate. Enhanced git: --no-verify and --amend blocked as self-governing guardrails (AGI-first safety — engineering discipline, not permission prompts). Context engine: replaced hardcoded MIN_RECENT_MESSAGES=30/MAX_RECENT_MESSAGES=60 with skull-aligned RECENT_BUDGET_FRACTION=0.25 — token-budgeted, scales with model context window (200K→50K, 2M→500K). System prompt: section_coding_tools() in Standard+Full tiers guides LLM to prefer code_edit over file_write, code_grep over shell grep. A/B benchmark: "Impossible Refactor" — 10-task multi-file scenario with UTF-8 traps + credential traps + git safety traps: NEW toolset 67.2% token savings, 4.4x efficiency, 100% accuracy, zero safety violations vs OLD 77.8% accuracy + 3 violations. Research paper: docs/TEM_CODE_RESEARCH.md. Harmony audit: zero conflicts across all 24 crates. 24 crates, 2,406 tests.
+                    │
 2026-04-09  v4.8.0  ●━━━ TUI polish + observability pass. FIX: empty command overlays — `/config`, `/keys`, `/usage`, `/status`, `/model` now render real data instead of a placeholder stub (root cause: `views/config_panel.rs:12` had no access to `AppState`). Streaming tool trace in the activity panel — every tool call shows args preview, duration, and first-line result preview via two new `AgentTaskPhase` enrichments (`ExecutingTool` gains `args_preview` + `started_at_ms`, new `ToolCompleted` variant). Collapsed thinking line now shows `▸ shell {"cmd":"ls"} · 0.4s · 3 tools · 68s total` instead of a bare `Thinking (68s)`. Status bar now a 3-section layout: left state indicator (`● idle / ◐ thinking / ◉ tool:name / ⊗ cancelled`), center model/tokens/cost, right context-window meter + git repo · branch. Keybind hint bar above the status bar, context-sensitive (idle / working / overlay / scroll / select mode). `Ctrl+Y` opens a numbered code block yank picker backed by `arboard` with an OSC 52 fallback for headless/SSH terminals. `Alt+S` toggles mouse capture so native terminal text selection works without leaving the TUI. `Escape` (and `Ctrl+C`) now actually cancel Tem mid-task by reusing the existing `Arc<AtomicBool>` interrupt path the gateway worker already uses for higher-priority message preemption — zero new runtime code, zero new tokio::select! branches, zero browser-tool cleanup risk. `/tools` command opens a session tool-call history overlay grouped by turn. `/compact` stub removed from the command surface per the no-stubs rule. `/help` rewritten with commands-by-category sections (Editing, Navigation, Copy & Cancel, Overlays, Session). 24 crates, 2,308 tests. Zero-risk docs in `docs/tui/`.
                     │
 2026-04-09  v4.7.1  ●━━━ Bulletproof Linux install + ARM64 targets + TUI in default features. install.sh now runs an `ldd` check against the downloaded Linux desktop binary, detects missing Wayland/X11/PipeWire/XCB runtime libs, prints the exact apt/dnf/pacman install command, and — via `/dev/tty` prompt so it works under `curl | sh` — offers to install them with sudo or falls back to the static musl server binary. No user is ever left with a broken executable. New `scripts/install-linux-deps.sh` one-shot system dep installer supports `--runtime` (run pre-built), `--build` (compile from source), or both (default), with apt/dnf/pacman auto-detection matching CI. Release matrix expanded with `aarch64-unknown-linux-musl` + `aarch64-unknown-linux-gnu` targets on the free `ubuntu-24.04-arm` runners — Raspberry Pi 4/5 (64-bit Pi OS), AWS Graviton, Oracle Ampere, and M-series Linux now install via the same `curl | sh` one-liner. TUI promoted to default features — every pre-built binary now ships `temm1e tui` without needing `--features tui` at build time (+1.8 MB release binary, well under the 30 MB musl size gate). Fixes #32 (Raspberry Pi user blocked by missing ARM release + Wayland cross-compile pain). 24 crates, 2,307 tests.
@@ -1039,11 +1193,13 @@ Requires Rust 1.82+ and Chrome/Chromium (for the browser tool).
                     │
 2026-03-22  v3.3.0  ●━━━ WhatsApp Web + Cloud API channels, one-line installer, setup wizard — wa-rs integration (QR scan pairing, Signal Protocol E2E, SQLite sessions), Cloud API with webhook signature validation, install.sh (curl|sh, multi-platform binaries), `temm1e setup` interactive wizard, multi-platform release CI (x86_64+aarch64, Linux+macOS), fix #21 OpenAI empty name field. 1832 tests
                     │
+2026-04-10  v4.9.0  ●━━━ Eigen-Tune wired into runtime — closes issue #35 ("feature advertised as functional but pipeline incomplete"). Folds curator + mlx/unsloth backends + trainer + evaluator into temm1e-distill. Wires the engine into runtime.rs (5 fire-and-forget hooks: collection, signal-tool, signal-user, complexity capture, full routing wrapper) and main.rs (engine construction + 60s tick task + CLI subcommand + slash command). Double opt-in (`enabled` AND `enable_local_routing`). Seven-gate safety chain (master kill switch + tool-use guard + Wilson 99% CI + SPRT + CUSUM drift detection + 30s timeout/cloud fallback + manual demote). Llama/Mistral/Gemma family base models via Ollama ADAPTER directive. 30+ new unit tests, 2337 workspace tests passing. Default-config users: zero behavior change.
+                    │
 2026-03-22  v3.2.1  ●━━━ Discord integration + channel-agnostic startup — Discord channel wired into message pipeline (was implemented but never connected), per-message channel map routing (Telegram-only/Discord-only/both simultaneously), DISCORD_BOT_TOKEN env auto-inject, wildcard allowlist ("*"), Discord reply threading via MessageReference, /timelimit command for runtime hive task timeout, hive default bumped to 30min, Docker rebuilt with all features (TUI + Discord + health check + tini). 1825 tests
                     │
 2026-03-21  v3.2.0  ●━━━ Tem Prowl — web-native browsing with OTK authentication. Cloned profile architecture (inherit user's Chrome sessions), /login command (100+ services), /browser lifecycle management, QR auto-detection, layered observation (32% token savings), credential isolation (zeroize + vault), headed/headless fallback. Live validated: Facebook post + Zalo message from Telegram. 1808 tests
                     │
-2026-03-18  v3.1.0  ●━━━ Eigen-Tune — self-tuning knowledge distillation engine (temm1e-distill), 7-stage pipeline with SPRT/CUSUM/Wilson statistical gates, zero-cost evaluation, proven on M2 with real LoRA fine-tune, 119 new tests, 1638 total. Research: real fine-tuning proof-of-concept on SmolLM2-135M
+2026-03-18  v3.1.0  ●━━━ Eigen-Tune research foundation — statistical machinery for temm1e-distill (SPRT/CUSUM/Wilson gates), SQLite store, state machine, 119 new tests. Research: real fine-tuning proof-of-concept on SmolLM2-135M (manual M2 run; runtime integration was deferred to v4.9.0). 1638 total tests.
                     │
 2026-03-18  v3.0.0  ●━━━ Many Tems — stigmergic swarm intelligence runtime (temm1e-hive), Alpha coordinator + worker Tems, task DAG decomposition, scent-field coordination, 4.54x speedup on parallel tasks, zero coordination tokens. Research: quadratic→linear context cost
                     │

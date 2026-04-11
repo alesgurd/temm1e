@@ -57,13 +57,16 @@ impl MarkdownMemory {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).await?;
         }
-        let existing = Self::read_file(path).await?;
-        let new_content = if existing.is_empty() {
-            text.to_string()
-        } else {
-            format!("{existing}\n{text}")
-        };
-        fs::write(path, new_content).await?;
+        use tokio::io::AsyncWriteExt;
+        let mut file = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .await?;
+        // Always prepend \n separator. On fresh files this adds a harmless
+        // leading newline that the entry parser (split on "<!-- entry:") skips.
+        file.write_all(b"\n").await?;
+        file.write_all(text.as_bytes()).await?;
         Ok(())
     }
 

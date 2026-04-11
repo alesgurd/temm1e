@@ -12,6 +12,10 @@ pub struct SessionContext {
     pub role: Role,
     pub history: Vec<ChatMessage>,
     pub workspace_path: std::path::PathBuf,
+    /// Tracks which files have been read in this session (Tem-Code v5.0).
+    /// Shared across tool calls via Arc — clone-safe for gateway session management.
+    pub read_tracker:
+        std::sync::Arc<tokio::sync::RwLock<std::collections::HashSet<std::path::PathBuf>>>,
 }
 
 /// Session info for listing

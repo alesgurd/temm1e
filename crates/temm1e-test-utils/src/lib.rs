@@ -478,6 +478,9 @@ pub fn make_session() -> SessionContext {
         role: temm1e_core::types::rbac::Role::Admin,
         history: Vec::new(),
         workspace_path: std::env::temp_dir().join("temm1e-test"),
+        read_tracker: std::sync::Arc::new(tokio::sync::RwLock::new(
+            std::collections::HashSet::new(),
+        )),
     }
 }
 

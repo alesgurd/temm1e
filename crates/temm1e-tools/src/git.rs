@@ -182,13 +182,14 @@ impl GitTool {
     }
 
     /// Check for dangerous operations that should be blocked.
+    /// Self-governing guardrails — engineering discipline, not permission prompts.
     fn validate_safety(action: &str, args: &serde_json::Value) -> Result<(), Temm1eError> {
         // Block reset --hard unless explicitly allowed
         if action == "checkout" {
             // Checkout is fine, it's just branch switching
         }
 
-        // General check: scan for reset --hard in any extra args
+        // General check: scan for dangerous flags in extra args
         if let Some(extra) = args.get("args").and_then(|v| v.as_array()) {
             for a in extra {
                 if let Some(s) = a.as_str() {
@@ -197,6 +198,31 @@ impl GitTool {
                             "reset --hard is blocked for safety. Use the shell tool directly if needed."
                                 .into(),
                         ));
+                    }
+                }
+            }
+        }
+
+        // Tem-Code v5.0: Block --no-verify on commit (hooks exist for a reason)
+        if action == "commit" {
+            if let Some(extra) = args.get("args").and_then(|v| v.as_array()) {
+                for a in extra {
+                    if let Some(s) = a.as_str() {
+                        if s == "--no-verify" || s == "-n" {
+                            return Err(Temm1eError::Tool(
+                                "--no-verify is blocked. Pre-commit hooks enforce code quality. \
+                                 Fix the issue that the hook catches instead of skipping it."
+                                    .into(),
+                            ));
+                        }
+                        if s == "--amend" {
+                            return Err(Temm1eError::Tool(
+                                "--amend is blocked by default. Create a new commit instead. \
+                                 Amending modifies the previous commit, which may destroy work \
+                                 if it was already pushed."
+                                    .into(),
+                            ));
+                        }
                     }
                 }
             }
@@ -601,6 +627,7 @@ mod tests {
             workspace_path: std::path::PathBuf::from("/tmp"),
             session_id: "test".to_string(),
             chat_id: "test".to_string(),
+            read_tracker: None,
         };
         let result = tool.execute(input, &ctx).await;
         assert!(result.is_err());
@@ -617,6 +644,7 @@ mod tests {
             workspace_path: std::path::PathBuf::from("/tmp"),
             session_id: "test".to_string(),
             chat_id: "test".to_string(),
+            read_tracker: None,
         };
         let result = tool.execute(input, &ctx).await;
         assert!(result.is_err());

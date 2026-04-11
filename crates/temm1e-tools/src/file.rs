@@ -7,6 +7,9 @@ use temm1e_core::{PathAccess, Tool, ToolContext, ToolDeclarations, ToolInput, To
 /// Maximum file read size (32 KB — keeps tool output within token budget).
 const MAX_READ_SIZE: usize = 32 * 1024;
 
+/// Default line limit for file_read (matches industry standard).
+const DEFAULT_LINE_LIMIT: usize = 2000;
+
 #[derive(Default)]
 pub struct FileReadTool;
 
@@ -23,7 +26,8 @@ impl Tool for FileReadTool {
     }
 
     fn description(&self) -> &str {
-        "Read the contents of a file. Returns the text content. \
+        "Read the contents of a file with line numbers. Supports offset and limit \
+         for reading specific sections of large files. Returns line-numbered content. \
          Paths are relative to the workspace directory."
     }
 
@@ -34,6 +38,14 @@ impl Tool for FileReadTool {
                 "path": {
                     "type": "string",
                     "description": "File path to read (relative to workspace or absolute)"
+                },
+                "offset": {
+                    "type": "integer",
+                    "description": "Start line number (1-indexed, default: 1)"
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum lines to return (default: 2000)"
                 }
             },
             "required": ["path"]
@@ -59,16 +71,64 @@ impl Tool for FileReadTool {
             .and_then(|v| v.as_str())
             .ok_or_else(|| Temm1eError::Tool("Missing required parameter: path".into()))?;
 
-        let path = resolve_path(path_str, &ctx.workspace_path);
+        let offset = input
+            .arguments
+            .get("offset")
+            .and_then(|v| v.as_u64())
+            .map(|v| v.max(1) as usize)
+            .unwrap_or(1);
+
+        let limit = input
+            .arguments
+            .get("limit")
+            .and_then(|v| v.as_u64())
+            .map(|v| v as usize)
+            .unwrap_or(DEFAULT_LINE_LIMIT);
+
+        let path = resolve_path(path_str, &ctx.workspace_path)?;
 
         match tokio::fs::read_to_string(&path).await {
-            Ok(mut content) => {
-                if content.len() > MAX_READ_SIZE {
-                    content.truncate(MAX_READ_SIZE);
-                    content.push_str("\n... [file truncated]");
+            Ok(content) => {
+                // Track this read for the read-before-write gate
+                if let Some(ref tracker) = ctx.read_tracker {
+                    tracker.write().await.insert(path.clone());
                 }
+
+                let lines: Vec<&str> = content.lines().collect();
+                let total_lines = lines.len();
+
+                // Apply offset (1-indexed) and limit
+                let start = (offset - 1).min(total_lines);
+                let end = (start + limit).min(total_lines);
+                let selected = &lines[start..end];
+
+                // Format with line numbers
+                let mut output = String::new();
+                for (i, line) in selected.iter().enumerate() {
+                    let line_num = start + i + 1;
+                    output.push_str(&format!("{}\t{}\n", line_num, line));
+                }
+
+                // Check byte size limit (safe UTF-8 boundary)
+                if output.len() > MAX_READ_SIZE {
+                    let mut end = MAX_READ_SIZE;
+                    while end > 0 && !output.is_char_boundary(end) {
+                        end -= 1;
+                    }
+                    output.truncate(end);
+                    output.push_str("\n... [output truncated at 32KB]");
+                }
+
+                // Add metadata if partial read
+                if end < total_lines {
+                    output.push_str(&format!(
+                        "\n[Showing lines {}-{} of {} total]",
+                        offset, end, total_lines
+                    ));
+                }
+
                 Ok(ToolOutput {
-                    content,
+                    content: output,
                     is_error: false,
                 })
             }
@@ -143,7 +203,7 @@ impl Tool for FileWriteTool {
             .and_then(|v| v.as_str())
             .ok_or_else(|| Temm1eError::Tool("Missing required parameter: content".into()))?;
 
-        let path = resolve_path(path_str, &ctx.workspace_path);
+        let path = resolve_path(path_str, &ctx.workspace_path)?;
 
         // Create parent directories if needed
         if let Some(parent) = path.parent() {
@@ -220,7 +280,7 @@ impl Tool for FileListTool {
             .and_then(|v| v.as_str())
             .unwrap_or(".");
 
-        let path = resolve_path(path_str, &ctx.workspace_path);
+        let path = resolve_path(path_str, &ctx.workspace_path)?;
 
         match tokio::fs::read_dir(&path).await {
             Ok(mut entries) => {
@@ -255,36 +315,95 @@ impl Tool for FileListTool {
     }
 }
 
+/// Normalize a path by resolving `.` and `..` components without filesystem access.
+fn normalize_path(path: &std::path::Path) -> std::path::PathBuf {
+    use std::path::Component;
+    let mut result = std::path::PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::ParentDir => {
+                result.pop();
+            }
+            Component::CurDir => {}
+            other => result.push(other),
+        }
+    }
+    result
+}
+
 /// Resolve a path string relative to the workspace directory.
-fn resolve_path(path_str: &str, workspace: &std::path::Path) -> std::path::PathBuf {
-    // Expand ~ to user's home directory (works on macOS, Linux, and containers)
-    if path_str.starts_with("~/") || path_str == "~" {
+///
+/// All resolved paths are validated to remain within the workspace boundary.
+/// Paths that escape the workspace via `..`, absolute paths, or `~` expansion
+/// are rejected with an error.
+pub(crate) fn resolve_path(
+    path_str: &str,
+    workspace: &std::path::Path,
+) -> Result<std::path::PathBuf, Temm1eError> {
+    let resolved = if path_str.starts_with("~/") || path_str == "~" {
+        // Expand ~ to user's home directory
         let suffix = if path_str.len() > 2 {
             &path_str[2..]
         } else {
             ""
         };
         if let Some(home) = dirs::home_dir() {
-            return home.join(suffix);
+            home.join(suffix)
+        } else if let Ok(home) = std::env::var("HOME") {
+            std::path::PathBuf::from(home).join(suffix)
+        } else {
+            workspace.join(path_str)
         }
-        // Fallback: try $HOME env var directly (some containers set HOME but
-        // don't populate /etc/passwd which dirs::home_dir reads on Linux)
+    } else if path_str.starts_with("$HOME/") || path_str.starts_with("$HOME\\") {
+        // Expand $HOME/... if used explicitly in path
         if let Ok(home) = std::env::var("HOME") {
-            return std::path::PathBuf::from(home).join(suffix);
+            std::path::PathBuf::from(home).join(&path_str[6..])
+        } else {
+            workspace.join(path_str)
         }
-    }
-
-    // Expand $HOME/... if used explicitly in path
-    if path_str.starts_with("$HOME/") || path_str.starts_with("$HOME\\") {
-        if let Ok(home) = std::env::var("HOME") {
-            return std::path::PathBuf::from(home).join(&path_str[6..]);
-        }
-    }
-
-    let path = std::path::Path::new(path_str);
-    if path.is_absolute() {
-        path.to_path_buf()
     } else {
-        workspace.join(path)
+        let path = std::path::Path::new(path_str);
+        if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            workspace.join(path)
+        }
+    };
+
+    // Canonicalize workspace (resolves symlinks like /var -> /private/var on macOS)
+    let workspace_canonical = workspace
+        .canonicalize()
+        .unwrap_or_else(|_| normalize_path(workspace));
+
+    // For existing paths, canonicalize to resolve symlinks and ..
+    // For new paths (file_write), canonicalize the parent then append the filename.
+    let resolved_canonical = if resolved.exists() {
+        resolved
+            .canonicalize()
+            .unwrap_or_else(|_| normalize_path(&resolved))
+    } else if let Some(parent) = resolved.parent() {
+        let canonical_parent = if parent.exists() {
+            parent
+                .canonicalize()
+                .unwrap_or_else(|_| normalize_path(parent))
+        } else {
+            normalize_path(parent)
+        };
+        match resolved.file_name() {
+            Some(name) => canonical_parent.join(name),
+            None => canonical_parent,
+        }
+    } else {
+        normalize_path(&resolved)
+    };
+
+    if !resolved_canonical.starts_with(&workspace_canonical) {
+        return Err(Temm1eError::Tool(format!(
+            "Access denied: path '{}' is outside workspace '{}'",
+            path_str,
+            workspace.display()
+        )));
     }
+
+    Ok(resolved_canonical)
 }
