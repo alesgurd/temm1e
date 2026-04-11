@@ -366,12 +366,10 @@ pub fn provider_for_model(model: &str) -> Option<&'static str> {
     }
     // Also check default models (e.g. gpt-5.4 is default for openai-codex
     // but might not be in the available list)
-    for &provider in ALL_KNOWN_PROVIDERS {
-        if default_model(provider) == model {
-            return Some(provider);
-        }
-    }
-    None
+    ALL_KNOWN_PROVIDERS
+        .iter()
+        .find(|&&provider| default_model(provider) == model)
+        .copied()
 }
 
 /// Quick vision check for model display.
