@@ -16,8 +16,10 @@ use temm1e_core::types::message::{AttachmentRef, InboundMessage, OutboundMessage
 use temm1e_core::{Channel, FileTransfer};
 
 use serenity::all::{
-    ChannelId, Context, CreateAttachment, CreateMessage, EventHandler, GatewayIntents, Message,
-    Ready,
+    ChannelId, Command, CommandDataOptionValue, CommandOptionType, Context, CreateAttachment,
+    CreateCommand, CreateCommandOption, CreateInteractionResponse,
+    CreateInteractionResponseMessage, CreateMessage, EventHandler, GatewayIntents, Interaction,
+    Message, Ready,
 };
 use serenity::Client;
 
@@ -228,7 +230,8 @@ impl Channel for DiscordChannel {
     }
 
     async fn start(&mut self) -> Result<(), Temm1eError> {
-        let intents = GatewayIntents::GUILD_MESSAGES
+        let intents = GatewayIntents::GUILDS
+            | GatewayIntents::GUILD_MESSAGES
             | GatewayIntents::DIRECT_MESSAGES
             | GatewayIntents::MESSAGE_CONTENT;
 
@@ -344,11 +347,12 @@ impl Channel for DiscordChannel {
         // Discord has a 2000 character message limit. Split if needed.
         let chunks = split_message(&text, 2000);
         for (i, chunk) in chunks.iter().enumerate() {
+            let has_reply_ref = i == 0 && msg.reply_to.is_some();
             let mut builder = CreateMessage::new().content(chunk);
 
             // Reply to the original message (first chunk only — Discord allows
             // one reply reference per message)
-            if i == 0 {
+            if has_reply_ref {
                 if let Some(ref reply_id) = msg.reply_to {
                     if let Ok(mid) = reply_id.parse::<u64>() {
                         builder = builder
@@ -357,9 +361,23 @@ impl Channel for DiscordChannel {
                 }
             }
 
-            channel_id.send_message(&http, builder).await.map_err(|e| {
-                Temm1eError::Channel(format!("Failed to send Discord message: {e}"))
-            })?;
+            let result = channel_id.send_message(&http, builder).await;
+
+            // If the reply reference was invalid (e.g. interaction ID, deleted
+            // message), retry without it rather than losing the message.
+            if has_reply_ref && result.is_err() {
+                let fallback = CreateMessage::new().content(chunk);
+                channel_id
+                    .send_message(&http, fallback)
+                    .await
+                    .map_err(|e| {
+                        Temm1eError::Channel(format!("Failed to send Discord message: {e}"))
+                    })?;
+            } else {
+                result.map_err(|e| {
+                    Temm1eError::Channel(format!("Failed to send Discord message: {e}"))
+                })?;
+            }
         }
 
         Ok(())
@@ -577,14 +595,426 @@ impl EventHandler for DiscordHandler {
             "Discord bot connected"
         );
         // Store the HTTP client so DiscordChannel can use it for sending.
-        let mut guard = match self.http_holder.write() {
-            Ok(g) => g,
-            Err(poisoned) => {
-                tracing::error!("Discord HTTP holder RwLock poisoned in ready(), recovering");
-                poisoned.into_inner()
+        {
+            let mut guard = match self.http_holder.write() {
+                Ok(g) => g,
+                Err(poisoned) => {
+                    tracing::error!("Discord HTTP holder RwLock poisoned in ready(), recovering");
+                    poisoned.into_inner()
+                }
+            };
+            *guard = Some(ctx.http.clone());
+        }
+
+        // Register global slash commands — channel-level admin commands and
+        // agent runtime commands so they all appear in Discord's "/" menu.
+        let commands = vec![
+            // ── Channel-level admin commands (handled locally) ──
+            CreateCommand::new("allow")
+                .description("Add a user to the allowlist (admin)")
+                .add_option(
+                    CreateCommandOption::new(
+                        CommandOptionType::String,
+                        "user_id",
+                        "The numeric Discord user ID to allow",
+                    )
+                    .required(true),
+                ),
+            CreateCommand::new("revoke")
+                .description("Remove a user from the allowlist (admin)")
+                .add_option(
+                    CreateCommandOption::new(
+                        CommandOptionType::String,
+                        "user_id",
+                        "The numeric Discord user ID to revoke",
+                    )
+                    .required(true),
+                ),
+            CreateCommand::new("users").description("List all allowed users (admin)"),
+            // ── Agent runtime commands (forwarded to gateway) ──
+            CreateCommand::new("help").description("Show available commands"),
+            CreateCommand::new("stop").description("Interrupt the active task"),
+            CreateCommand::new("status").description("Show current task status"),
+            CreateCommand::new("queue").description("Show queued orders"),
+            CreateCommand::new("keys").description("List configured providers and active model"),
+            CreateCommand::new("model")
+                .description("Show or switch the current model")
+                .add_option(
+                    CreateCommandOption::new(
+                        CommandOptionType::String,
+                        "name",
+                        "Model name to switch to",
+                    )
+                    .required(false),
+                ),
+            CreateCommand::new("addkey")
+                .description("Add an API key")
+                .add_option(
+                    CreateCommandOption::new(
+                        CommandOptionType::String,
+                        "mode",
+                        "Key add mode: (empty)=OTK, unsafe=paste, github=PAT",
+                    )
+                    .required(false),
+                ),
+            CreateCommand::new("removekey")
+                .description("Remove a provider's API key")
+                .add_option(
+                    CreateCommandOption::new(
+                        CommandOptionType::String,
+                        "provider",
+                        "Provider name to remove",
+                    )
+                    .required(true),
+                ),
+            CreateCommand::new("usage")
+                .description("Show token usage and cost, or toggle per-turn display")
+                .add_option(
+                    CreateCommandOption::new(
+                        CommandOptionType::String,
+                        "toggle",
+                        "on/off to enable/disable per-turn display",
+                    )
+                    .required(false),
+                ),
+            CreateCommand::new("memory")
+                .description("Show or switch memory strategy (lambda/echo)")
+                .add_option(
+                    CreateCommandOption::new(
+                        CommandOptionType::String,
+                        "mode",
+                        "Memory mode: lambda or echo",
+                    )
+                    .required(false),
+                ),
+            CreateCommand::new("cambium")
+                .description("Cambium self-grow status, on/off, or grow")
+                .add_option(
+                    CreateCommandOption::new(
+                        CommandOptionType::String,
+                        "action",
+                        "on, off, or grow <task>",
+                    )
+                    .required(false),
+                ),
+            CreateCommand::new("eigentune")
+                .description("Eigen-Tune status and management")
+                .add_option(
+                    CreateCommandOption::new(
+                        CommandOptionType::String,
+                        "action",
+                        "setup, model, tick, or demote <tier>",
+                    )
+                    .required(false),
+                ),
+            CreateCommand::new("mcp")
+                .description("MCP server management")
+                .add_option(
+                    CreateCommandOption::new(
+                        CommandOptionType::String,
+                        "action",
+                        "add/remove/restart <name> [command-or-url]",
+                    )
+                    .required(false),
+                ),
+            CreateCommand::new("browser")
+                .description("Browser status and session management")
+                .add_option(
+                    CreateCommandOption::new(
+                        CommandOptionType::String,
+                        "action",
+                        "close, sessions, or forget <service>",
+                    )
+                    .required(false),
+                ),
+            CreateCommand::new("timelimit")
+                .description("Show or set task time limit")
+                .add_option(
+                    CreateCommandOption::new(
+                        CommandOptionType::String,
+                        "seconds",
+                        "Time limit in seconds",
+                    )
+                    .required(false),
+                ),
+            CreateCommand::new("vigil")
+                .description("Self-diagnosis vigil status and control")
+                .add_option(
+                    CreateCommandOption::new(
+                        CommandOptionType::String,
+                        "action",
+                        "auto, disable, or status",
+                    )
+                    .required(false),
+                ),
+            CreateCommand::new("login")
+                .description("OAuth authentication flow")
+                .add_option(
+                    CreateCommandOption::new(
+                        CommandOptionType::String,
+                        "service",
+                        "Service to authenticate with",
+                    )
+                    .required(false),
+                ),
+            CreateCommand::new("reload").description("Hot-reload config and agent (admin)"),
+            CreateCommand::new("reset").description("Factory reset all local state (admin)"),
+            CreateCommand::new("restart").description("Restart TEMM1E process (admin)"),
+        ];
+
+        match Command::set_global_commands(&ctx.http, commands).await {
+            Ok(cmds) => {
+                tracing::info!(
+                    count = cmds.len(),
+                    "Registered Discord slash commands"
+                );
             }
+            Err(e) => {
+                tracing::error!(error = %e, "Failed to register Discord slash commands");
+            }
+        }
+    }
+
+    async fn interaction_create(&self, ctx: Context, interaction: Interaction) {
+        let Interaction::Command(cmd) = interaction else {
+            return;
         };
-        *guard = Some(ctx.http.clone());
+
+        let user_id = cmd.user.id.get().to_string();
+        let username = Some(cmd.user.name.clone());
+        let channel_id = cmd.channel_id;
+
+        // ── Channel-level admin commands (handled locally) ──
+        if matches!(cmd.data.name.as_str(), "allow" | "revoke" | "users") {
+            let is_admin = {
+                let adm = match self.admin.read() {
+                    Ok(g) => g,
+                    Err(poisoned) => {
+                        tracing::error!(
+                            "Discord admin RwLock poisoned in interaction_create, recovering"
+                        );
+                        poisoned.into_inner()
+                    }
+                };
+                adm.as_deref() == Some(&user_id)
+            };
+
+            if !is_admin {
+                let response = CreateInteractionResponse::Message(
+                    CreateInteractionResponseMessage::new()
+                        .content("Only the admin can use this command.")
+                        .ephemeral(true),
+                );
+                if let Err(e) = cmd.create_response(&ctx.http, response).await {
+                    tracing::warn!(error = %e, "Failed to send admin-only slash command reply");
+                }
+                return;
+            }
+
+            let reply = match cmd.data.name.as_str() {
+                "users" => {
+                    let list = match self.allowlist.read() {
+                        Ok(g) => g,
+                        Err(poisoned) => {
+                            tracing::error!(
+                                "Discord allowlist RwLock poisoned in /users slash cmd, recovering"
+                            );
+                            poisoned.into_inner()
+                        }
+                    };
+                    let admin_id = match self.admin.read() {
+                        Ok(g) => g.clone().unwrap_or_default(),
+                        Err(poisoned) => {
+                            tracing::error!(
+                                "Discord admin RwLock poisoned in /users slash cmd, recovering"
+                            );
+                            poisoned.into_inner().clone().unwrap_or_default()
+                        }
+                    };
+                    if list.is_empty() {
+                        "Allowlist is empty.".to_string()
+                    } else {
+                        let mut lines = Vec::with_capacity(list.len());
+                        for uid in list.iter() {
+                            if uid == &admin_id {
+                                lines.push(format!("{} (admin)", uid));
+                            } else {
+                                lines.push(uid.clone());
+                            }
+                        }
+                        format!("Allowed users:\n{}", lines.join("\n"))
+                    }
+                }
+                "allow" => {
+                    let target = cmd
+                        .data
+                        .options
+                        .first()
+                        .and_then(|opt| match &opt.value {
+                            CommandDataOptionValue::String(s) => Some(s.trim().to_string()),
+                            _ => None,
+                        })
+                        .unwrap_or_default();
+
+                    if target.is_empty() {
+                        "Usage: /allow <user_id>".to_string()
+                    } else {
+                        let already_exists = {
+                            let mut list = match self.allowlist.write() {
+                                Ok(g) => g,
+                                Err(poisoned) => {
+                                    tracing::error!(
+                                        "Discord allowlist RwLock poisoned in /allow slash cmd, recovering"
+                                    );
+                                    poisoned.into_inner()
+                                }
+                            };
+                            if list.iter().any(|a| a == &target) {
+                                true
+                            } else {
+                                list.push(target.clone());
+                                false
+                            }
+                        };
+                        if already_exists {
+                            format!("User {} is already allowed.", target)
+                        } else if let Err(e) = persist_allowlist(&self.allowlist, &self.admin) {
+                            tracing::error!(error = %e, "Failed to persist allowlist after /allow slash cmd");
+                            format!("User {} added (but failed to save to disk: {}).", target, e)
+                        } else {
+                            tracing::info!(target = %target, "Admin added user via /allow slash command");
+                            format!("User {} added to the allowlist.", target)
+                        }
+                    }
+                }
+                "revoke" => {
+                    let target = cmd
+                        .data
+                        .options
+                        .first()
+                        .and_then(|opt| match &opt.value {
+                            CommandDataOptionValue::String(s) => Some(s.trim().to_string()),
+                            _ => None,
+                        })
+                        .unwrap_or_default();
+
+                    if target.is_empty() {
+                        "Usage: /revoke <user_id>".to_string()
+                    } else if target == user_id {
+                        "You cannot revoke yourself.".to_string()
+                    } else {
+                        let was_present = {
+                            let mut list = match self.allowlist.write() {
+                                Ok(g) => g,
+                                Err(poisoned) => {
+                                    tracing::error!(
+                                        "Discord allowlist RwLock poisoned in /revoke slash cmd, recovering"
+                                    );
+                                    poisoned.into_inner()
+                                }
+                            };
+                            let before = list.len();
+                            list.retain(|a| a != &target);
+                            list.len() < before
+                        };
+                        if !was_present {
+                            format!("User {} is not on the allowlist.", target)
+                        } else if let Err(e) = persist_allowlist(&self.allowlist, &self.admin) {
+                            tracing::error!(error = %e, "Failed to persist allowlist after /revoke slash cmd");
+                            format!("User {} revoked (but failed to save to disk: {}).", target, e)
+                        } else {
+                            tracing::info!(target = %target, "Admin revoked user via /revoke slash command");
+                            format!("User {} removed from the allowlist.", target)
+                        }
+                    }
+                }
+                _ => unreachable!(),
+            };
+
+            let response = CreateInteractionResponse::Message(
+                CreateInteractionResponseMessage::new()
+                    .content(reply)
+                    .ephemeral(true),
+            );
+            if let Err(e) = cmd.create_response(&ctx.http, response).await {
+                tracing::warn!(error = %e, "Failed to send slash command response");
+            }
+            return;
+        }
+
+        // ── Agent runtime commands — forward as InboundMessage ──
+        // Reconstruct the text command from the slash interaction so the
+        // agent runtime in main.rs processes it identically to a typed message.
+        let args = cmd
+            .data
+            .options
+            .iter()
+            .map(|opt| match &opt.value {
+                CommandDataOptionValue::String(s) => s.clone(),
+                other => format!("{:?}", other),
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+
+        let text = if args.is_empty() {
+            format!("/{}", cmd.data.name)
+        } else {
+            format!("/{} {}", cmd.data.name, args)
+        };
+
+        // Check allowlist before forwarding
+        let is_allowed = {
+            let list = match self.allowlist.read() {
+                Ok(g) => g,
+                Err(poisoned) => {
+                    tracing::error!(
+                        "Discord allowlist RwLock poisoned in interaction allowlist check, recovering"
+                    );
+                    poisoned.into_inner()
+                }
+            };
+            list.iter().any(|a| a == &user_id || a == "*")
+        };
+        if !is_allowed {
+            let response = CreateInteractionResponse::Message(
+                CreateInteractionResponseMessage::new()
+                    .content("You are not on the allowlist.")
+                    .ephemeral(true),
+            );
+            if let Err(e) = cmd.create_response(&ctx.http, response).await {
+                tracing::warn!(error = %e, "Failed to send allowlist denial for slash command");
+            }
+            return;
+        }
+
+        // ACK the interaction with an ephemeral receipt — the agent runtime
+        // will send the real response through the normal send_message path.
+        // Using an ephemeral Message instead of Defer avoids a permanent
+        // "thinking..." indicator that never resolves.
+        let ack = CreateInteractionResponse::Message(
+            CreateInteractionResponseMessage::new()
+                .content(format!("/{} received", cmd.data.name))
+                .ephemeral(true),
+        );
+        if let Err(e) = cmd.create_response(&ctx.http, ack).await {
+            tracing::warn!(error = %e, "Failed to ACK slash command interaction");
+        }
+
+        let inbound = InboundMessage {
+            id: cmd.id.get().to_string(),
+            channel: "discord".to_string(),
+            chat_id: channel_id.get().to_string(),
+            user_id,
+            username,
+            text: Some(text),
+            attachments: Vec::new(),
+            reply_to: None,
+            timestamp: chrono::Utc::now(),
+        };
+
+        if self.tx.send(inbound).await.is_err() {
+            tracing::error!("Discord inbound message receiver dropped (slash command)");
+        }
     }
 
     async fn message(&self, ctx: Context, msg: Message) {
