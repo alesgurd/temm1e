@@ -59,6 +59,14 @@ pub trait Channel: Send + Sync {
     async fn delete_message(&self, _chat_id: &str, _message_id: &str) -> Result<(), Temm1eError> {
         Ok(())
     }
+
+    /// Send a typing indicator to a chat.
+    ///
+    /// Signals to the user that the bot is composing a response.
+    /// Default implementation is a no-op for channels that don't support typing indicators.
+    async fn send_typing_indicator(&self, _chat_id: &str) -> Result<(), Temm1eError> {
+        Ok(())
+    }
 }
 
 /// Bi-directional file transfer sub-trait. Every messaging channel should implement this.

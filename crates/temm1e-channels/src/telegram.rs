@@ -334,6 +334,25 @@ impl Channel for TelegramChannel {
         );
         Ok(())
     }
+
+    async fn send_typing_indicator(&self, chat_id: &str) -> Result<(), Temm1eError> {
+        let bot = self
+            .bot
+            .as_ref()
+            .ok_or_else(|| Temm1eError::Channel("Telegram bot not started".into()))?;
+
+        let tg_chat_id: ChatId = chat_id
+            .parse::<i64>()
+            .map(ChatId)
+            .map_err(|_| Temm1eError::Channel(format!("Invalid chat_id: {}", chat_id)))?;
+
+        bot.send_chat_action(tg_chat_id, teloxide::types::ChatAction::Typing)
+            .await
+            .map_err(|e| {
+                Temm1eError::Channel(format!("Failed to send typing indicator: {e}"))
+            })?;
+        Ok(())
+    }
 }
 
 #[async_trait]
