@@ -3,6 +3,8 @@ use std::panic::AssertUnwindSafe;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
+mod search_install;
+
 use anyhow::Result;
 use async_trait::async_trait;
 use base64::Engine as _;
@@ -132,6 +134,17 @@ enum Commands {
         #[command(subcommand)]
         command: EigentuneCommands,
     },
+    /// Manage web search integrations (install SearXNG, list backends)
+    Search {
+        #[command(subcommand)]
+        command: SearchCommands,
+    },
+}
+
+#[derive(Subcommand)]
+enum SearchCommands {
+    /// Install and configure SearXNG locally via Docker/Podman for unlimited general web search
+    Install,
 }
 
 #[derive(Subcommand)]
@@ -7686,6 +7699,11 @@ Just type a message to chat with the AI agent.",
         Commands::Eigentune { command } => {
             handle_eigentune_command(config_path, command).await?;
         }
+        Commands::Search { command } => match command {
+            SearchCommands::Install => {
+                search_install::run_install().await?;
+            }
+        },
     }
 
     Ok(())

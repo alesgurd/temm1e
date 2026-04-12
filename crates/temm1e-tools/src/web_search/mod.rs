@@ -34,7 +34,7 @@ const TOOL_DESCRIPTION: &str = "Search the web. Returns a ranked list of results
 Works out of the box with no API keys or setup. Use this when you need current information, documentation, code, \
 discussions, research papers, or facts that aren't in your training data. The output footer always tells you which \
 sources are available, which were used, and how to retry with different parameters if results look thin.\n\n\
-Sources (auto-picked from a sensible default mix; override via `backends`):\n\
+Free sources (always enabled, no key needed):\n\
   - hackernews:    tech news, opinions, Show HN, Ask HN\n\
   - wikipedia:     facts, definitions, entities, history, biography\n\
   - github:        code, repositories, issues, projects\n\
@@ -42,7 +42,13 @@ Sources (auto-picked from a sensible default mix; override via `backends`):\n\
   - reddit:        community discussions, opinions, niche subjects\n\
   - marginalia:    blogs, essays, small-web, long-form writing\n\
   - arxiv:         academic papers (CS, math, physics)\n\
-  - pubmed:        biomedical and life sciences research\n\n\
+  - pubmed:        biomedical and life sciences research\n\
+  - duckduckgo:    general web catch-all (broad coverage)\n\n\
+Opt-in upgrades (enabled when user configures them):\n\
+  - searxng:       unlimited general web via self-hosted SearXNG (run `temm1e search install`)\n\
+  - exa:           neural search (paid, set EXA_API_KEY)\n\
+  - brave:         Brave Search API (paid, set BRAVE_API_KEY)\n\
+  - tavily:        Tavily search (paid, set TAVILY_API_KEY)\n\n\
 When auto results look thin, retry with explicit `backends=[...]`. The footer will hint which alternatives exist. \
 Result size is bounded by three knobs: `max_results` (1-30, default 10), `max_total_chars` (1000-16000, default 8000), \
 and `max_snippet_chars` (50-500, default 200).";
@@ -59,6 +65,7 @@ impl WebSearchTool {
 
     pub fn with_config(cfg: WebSearchToolConfig) -> Self {
         let backends: Vec<Arc<dyn SearchBackend>> = vec![
+            // Phase 1 — Tier 1 free backends (always enabled)
             Arc::new(backends::HackerNewsBackend::new()),
             Arc::new(backends::WikipediaBackend::new()),
             Arc::new(backends::GithubBackend::new()),
@@ -67,6 +74,14 @@ impl WebSearchTool {
             Arc::new(backends::MarginaliaBackend::new()),
             Arc::new(backends::ArxivBackend::new()),
             Arc::new(backends::PubmedBackend::new()),
+            // Phase 2 — DuckDuckGo via raw HTTP (Chrome UA + governor)
+            Arc::new(backends::DuckDuckGoBackend::new()),
+            // Phase 3 — Self-hosted SearXNG (enabled when user configures URL)
+            Arc::new(backends::SearxngBackend::new(cfg.searxng_url.clone())),
+            // Phase 4 — Paid backends (enabled when API key env var is set)
+            Arc::new(backends::ExaBackend::new()),
+            Arc::new(backends::BraveBackend::new()),
+            Arc::new(backends::TavilyBackend::new()),
         ];
 
         let governor = Arc::new(Governor::new(default_intervals()));
@@ -115,6 +130,8 @@ pub struct WebSearchToolConfig {
     pub backend_timeout_secs: u64,
     pub cache_ttl_secs: u64,
     pub default_backends: Vec<String>,
+    /// Optional self-hosted SearXNG URL. Enables the searxng backend when set.
+    pub searxng_url: Option<String>,
 }
 
 impl Default for WebSearchToolConfig {
@@ -126,6 +143,7 @@ impl Default for WebSearchToolConfig {
             backend_timeout_secs: DEFAULT_BACKEND_TIMEOUT_SECS,
             cache_ttl_secs: DEFAULT_CACHE_TTL_SECS,
             default_backends: vec![],
+            searxng_url: None,
         }
     }
 }
@@ -210,6 +228,7 @@ impl Tool for WebSearchTool {
         ToolDeclarations {
             file_access: vec![],
             network_access: vec![
+                // Phase 1 — Tier 1 free backends
                 "hn.algolia.com".into(),
                 "en.wikipedia.org".into(),
                 "api.github.com".into(),
@@ -219,6 +238,14 @@ impl Tool for WebSearchTool {
                 "api.marginalia.nu".into(),
                 "export.arxiv.org".into(),
                 "eutils.ncbi.nlm.nih.gov".into(),
+                // Phase 2 — DuckDuckGo HTML
+                "html.duckduckgo.com".into(),
+                // Phase 3 — Self-hosted SearXNG (user's own URL)
+                "localhost".into(),
+                // Phase 4 — Paid backends
+                "api.exa.ai".into(),
+                "api.search.brave.com".into(),
+                "api.tavily.com".into(),
             ],
             shell_access: false,
         }

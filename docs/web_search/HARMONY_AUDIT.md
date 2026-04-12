@@ -543,3 +543,157 @@ If any gate fails, **STOP** and either fix the underlying issue or document why 
 | Baseline test snapshot | ✅ 2414 passed / 0 failed / 13 ignored on main |
 
 **Audit complete. Approved by user. Ready to start Phase 1 implementation.**
+
+---
+
+# Appendix A: Phase 2 / 3 / 4 Audit (2026-04-12)
+
+This appendix audits Phases 2, 3, and 4 after Phase 1 shipped (commit `503c8a3`). Each phase has been reduced to **ZERO RISK** through design decisions made during parallel research.
+
+## A.1 Phase 2 — DuckDuckGo via raw HTTP (NOT via stealth Chrome)
+
+**Original design:** drive `html.duckduckgo.com/html/` via Tem's existing BrowserTool. Rated MEDIUM risk because it touches 4094 lines of browser code.
+
+**Revised design:** raw `reqwest` GET with a realistic Chrome User-Agent, strict 10/min governor, and regex-based HTML result extraction. **No browser integration.**
+
+**Why this works:**
+- Live test (Phase 1 research §2) confirmed `GET html.duckduckgo.com/html/?q=Q` with Chrome UA returns **HTTP 200 with 10 parseable result links** from raw curl.
+- The 202 challenge that OWUI/LangChain/crewAI see is from (a) POST-ing instead of GET-ing, (b) generic `python-requests/*` UA, or (c) exceeding ~10 req/min.
+- Our mitigations: GET-only, explicit stealth Chrome UA string, 6600ms governor (10/min + 10% buffer), realistic `Accept` and `Accept-Language` headers.
+- If DDG still serves 202 under load, the backend returns a single `BackendError::RateLimited` entry and the dispatcher continues with other backends.
+
+**Risk rating:** ZERO
+- No edits to `browser.rs` (4094 lines untouched).
+- No new Chrome process.
+- No `create_tools_with_browser` plumbing needed.
+- Same `SearchBackend` trait, same governor, same footer — isomorphic to Phase 1 backends.
+
+**Integration touchpoints:**
+- NEW: `crates/temm1e-tools/src/web_search/backends/ddg.rs` (~130 LoC)
+- EDIT: `crates/temm1e-tools/src/web_search/backends/mod.rs` — add `pub mod ddg; pub use ddg::DuckDuckGoBackend;`
+- EDIT: `crates/temm1e-tools/src/web_search/mod.rs` — register in the backends vec
+- EDIT: `crates/temm1e-tools/src/web_search/governor.rs` — already has `duckduckgo` entry (6600ms)
+
+---
+
+## A.2 Phase 3a — Self-hosted SearXNG backend (HTTP only)
+
+**Design:** an HTTP backend that reads `searxng_url` from either:
+1. Env var `TEMM1E_SEARXNG_URL`
+2. Config key `[tools.web_search].searxng_url`
+3. Both unset → `enabled() = false`
+
+When configured, it calls `GET {url}/search?q=Q&format=json&engines=google,bing,duckduckgo` and maps the response shape to `Vec<SearchHit>`.
+
+**Risk rating:** ZERO
+- Only activates when user has explicitly configured `searxng_url`.
+- Default config path is unset → backend silently absent.
+- Hits only `localhost` or whatever URL the user configured — no bundled network dependencies.
+- Isomorphic to existing backends.
+
+**Integration touchpoints:**
+- NEW: `crates/temm1e-tools/src/web_search/backends/searxng.rs` (~100 LoC)
+- EDIT: `crates/temm1e-tools/src/web_search/backends/mod.rs` — add `pub mod searxng; pub use searxng::SearxngBackend;`
+- EDIT: `crates/temm1e-tools/src/web_search/mod.rs` — register (always), with `enabled()` gate
+- EDIT: `crates/temm1e-tools/src/web_search/mod.rs::WebSearchToolConfig` — add `searxng_url: Option<String>`
+
+---
+
+## A.3 Phase 3b — `temm1e search install` CLI command
+
+**Design:** a new clap subcommand `Commands::Search { command: SearchCommands }` with `Install` variant that:
+1. Detects `docker` or `podman` via manual PATH walk (no new `which` dep).
+2. Writes a baked `~/.temm1e/searxng/settings.yml` with `formats: [html, json]` enabled.
+3. Prompts the user `[Y/n]` to confirm the `docker run` invocation.
+4. If confirmed, runs `docker run -d --name temm1e-searxng -p 8888:8080 -v ~/.temm1e/searxng:/etc/searxng:ro searxng/searxng` via `tokio::process::Command`.
+5. Polls `http://localhost:8888/search?q=test&format=json` to verify.
+6. Persists `searxng_url` to `~/.temm1e/temm1e.toml` via read-modify-write.
+
+**Risk dimensions (each ZERO):**
+
+| Risk | Rating | Mitigation |
+|---|---|---|
+| Runs docker without user consent | ZERO | Always prompts `[Y/n]` before `run`. Aborts on `n`. |
+| Shell injection via crafted args | ZERO | Uses `tokio::process::Command` with `.arg()` — never shell. No user input interpolated into args. |
+| Name collision with existing container | ZERO | Pre-check `docker ps -a --filter name=temm1e-searxng` and either reuse or prompt. |
+| Port 8888 already in use | ZERO | Verify step fails fast, prints remediation. |
+| Config file clobber | ZERO | Read-modify-write: load existing TOML, merge `[tools.web_search].searxng_url`, write back. |
+| Windows without Docker Desktop | ZERO | Docker detection returns None → prints "Docker/Podman not found. Install Docker Desktop: https://..." and exits cleanly. |
+| Volume mount path with spaces (macOS ~/Library) | ZERO | `dirs::home_dir()` returns canonical path; passed as quoted arg. |
+| settings.yml already exists and user edited it | ZERO | Pre-check `settings.yml` existence. If present, print "existing config detected — skipping write. Verify manually." |
+
+**Integration touchpoints:**
+- NEW: `src/search_install.rs` (~250 LoC) — install command logic
+- EDIT: `src/main.rs` — add `Search` variant + `SearchCommands` enum + handler branch (~30 LoC)
+
+---
+
+## A.4 Phase 4 — Paid backends (Exa, Brave, Tavily)
+
+**Design:** three new SearchBackend impls, each auto-registered but returns `enabled() = false` when its env var is missing. All three implement `disabled_env_hint()` so the footer shows "Not enabled: exa (set EXA_API_KEY)..." etc.
+
+**Verified API shapes (from parallel WebSearch research, 2026-04-12):**
+
+### Exa
+- `POST https://api.exa.ai/search`
+- Header: `x-api-key: $EXA_API_KEY`
+- Body: `{ query, numResults, type: "auto", contents: { highlights: true } }`
+- Response: `{ results: [{ id, title, url, publishedDate, highlights, text }] }`
+- Note: default type is `auto` as of 2026, not `neural`. No per-result `score` field.
+
+### Brave
+- `GET https://api.search.brave.com/res/v1/web/search?q=Q&count=N`
+- Header: `X-Subscription-Token: $BRAVE_API_KEY`, `Accept: application/json`, `Accept-Encoding: gzip`
+- Response: `{ web: { results: [{ title, url, description, age, meta_url }] } }`
+- Note: `count` max 20, `offset` max 9. Free tier removed Dec 2025.
+
+### Tavily
+- `POST https://api.tavily.com/search`
+- Header: `Authorization: Bearer tvly-$TAVILY_API_KEY` (NOT body — body-based auth is deprecated)
+- Body: `{ query, search_depth: "basic", max_results }`
+- Response: `{ query, answer, results: [{ title, url, content, score }] }`
+- Note: NO `published_date` field. Use `time_range` param as filter.
+
+**Risk dimensions (each ZERO):**
+
+| Risk | Rating | Mitigation |
+|---|---|---|
+| API key leak in logs | ZERO | Backend holds `api_key` in struct, never logs value. `BackendError::Http` body preview is 80 chars — will not contain key. |
+| 401 Unauthorized from wrong key format | ZERO | Returns `BackendError::Http { status: 401, body }`, agent sees "failed: http 401: ..." in footer, retries with different backend. |
+| Rate limit per provider | ZERO | Each backend gets its own governor interval. Exa: 1s. Brave: 600ms (50 req/s). Tavily: 600ms. Respects provider caps. |
+| Brave free tier gone | ZERO | User must explicitly set `BRAVE_API_KEY` — they chose to pay. Documented in tool description. |
+| Tavily auth mismatch if user sets key in body | ZERO | We always use the header. Body is our code, not user. |
+| Response shape drift | ZERO | Each backend's response struct uses `#[serde(default)]` on optional fields. Parse failures return `BackendError::Parse` with preview for debugging. |
+
+**Integration touchpoints:**
+- NEW: `crates/temm1e-tools/src/web_search/backends/exa.rs` (~150 LoC)
+- NEW: `crates/temm1e-tools/src/web_search/backends/brave.rs` (~130 LoC)
+- NEW: `crates/temm1e-tools/src/web_search/backends/tavily.rs` (~130 LoC)
+- EDIT: `crates/temm1e-tools/src/web_search/backends/mod.rs` — add `pub mod exa; pub mod brave; pub mod tavily;`
+- EDIT: `crates/temm1e-tools/src/web_search/mod.rs` — register (always), `enabled()` gates on env var
+
+---
+
+## A.5 Combined integration touchpoint diff
+
+| File | Change | LoC delta |
+|---|---|---|
+| `crates/temm1e-tools/src/web_search/backends/mod.rs` | 5 new `pub mod` + 5 new `pub use` | +10 |
+| `crates/temm1e-tools/src/web_search/mod.rs` | 5 new `Arc::new(...)` in backends vec + searxng_url config field | +20 |
+| `crates/temm1e-tools/src/web_search/backends/ddg.rs` | NEW | +130 |
+| `crates/temm1e-tools/src/web_search/backends/searxng.rs` | NEW | +100 |
+| `crates/temm1e-tools/src/web_search/backends/exa.rs` | NEW | +150 |
+| `crates/temm1e-tools/src/web_search/backends/brave.rs` | NEW | +130 |
+| `crates/temm1e-tools/src/web_search/backends/tavily.rs` | NEW | +130 |
+| `src/main.rs` | Add Search subcommand + handler | +40 |
+| `src/search_install.rs` | NEW | +250 |
+| `crates/temm1e-tools/src/web_search/types.rs` | Nothing — BackendId already has variants | 0 |
+| `crates/temm1e-tools/src/web_search/governor.rs` | Already has all entries | 0 |
+| **Total** | | **~960 LoC + tests** |
+
+**NO new dependencies.** No edits to `browser.rs`, `browser_pool.rs`, or any existing tool.
+
+## A.6 Verdict
+
+**Phases 2, 3, and 4 are each ZERO RISK** with the revised designs. All six risk dimensions checked. All integration points purely additive. Ready to implement.
+

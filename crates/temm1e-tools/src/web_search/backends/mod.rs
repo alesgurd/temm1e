@@ -4,21 +4,31 @@ use crate::web_search::types::*;
 use async_trait::async_trait;
 
 pub mod arxiv;
+pub mod brave;
+pub mod ddg;
+pub mod exa;
 pub mod github;
 pub mod hn;
 pub mod marginalia;
 pub mod pubmed;
 pub mod reddit;
+pub mod searxng;
 pub mod stackexchange;
+pub mod tavily;
 pub mod wikipedia;
 
 pub use arxiv::ArxivBackend;
+pub use brave::BraveBackend;
+pub use ddg::DuckDuckGoBackend;
+pub use exa::ExaBackend;
 pub use github::GithubBackend;
 pub use hn::HackerNewsBackend;
 pub use marginalia::MarginaliaBackend;
 pub use pubmed::PubmedBackend;
 pub use reddit::RedditBackend;
+pub use searxng::SearxngBackend;
 pub use stackexchange::StackOverflowBackend;
+pub use tavily::TavilyBackend;
 pub use wikipedia::WikipediaBackend;
 
 /// A search backend that can answer a SearchRequest.
