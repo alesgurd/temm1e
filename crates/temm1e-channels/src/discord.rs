@@ -433,6 +433,30 @@ impl Channel for DiscordChannel {
         );
         Ok(())
     }
+
+    async fn send_typing_indicator(&self, chat_id: &str) -> Result<(), Temm1eError> {
+        let http = {
+            let guard = match self.http.read() {
+                Ok(g) => g,
+                Err(poisoned) => {
+                    tracing::error!("Discord HTTP RwLock poisoned in typing indicator, recovering");
+                    poisoned.into_inner()
+                }
+            };
+            guard
+                .clone()
+                .ok_or_else(|| Temm1eError::Channel("Discord client not connected yet".into()))?
+        };
+
+        let channel_id: ChannelId = chat_id.parse::<u64>().map(ChannelId::new).map_err(|_| {
+            Temm1eError::Channel(format!("Invalid Discord channel_id: {}", chat_id))
+        })?;
+
+        channel_id.broadcast_typing(&http).await.map_err(|e| {
+            Temm1eError::Channel(format!("Failed to send typing indicator: {e}"))
+        })?;
+        Ok(())
+    }
 }
 
 #[async_trait]

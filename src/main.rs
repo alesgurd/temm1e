@@ -4869,6 +4869,23 @@ Just type a message to chat with the AI agent.",
                                             }
                                         }
 
+                                        // Spawn a repeating typing indicator that runs until
+                                        // processing completes. Discord typing lasts ~10s,
+                                        // Telegram ~5s, so we resend every 4s.
+                                        let typing_sender = sender.clone();
+                                        let typing_chat_id = msg.chat_id.clone();
+                                        let typing_stop = Arc::new(AtomicBool::new(false));
+                                        let typing_stop_clone = typing_stop.clone();
+                                        let typing_handle = tokio::spawn(async move {
+                                            loop {
+                                                (*typing_sender).send_typing_indicator(&typing_chat_id).await.ok();
+                                                tokio::time::sleep(std::time::Duration::from_secs(4)).await;
+                                                if typing_stop_clone.load(Ordering::Relaxed) {
+                                                    break;
+                                                }
+                                            }
+                                        });
+
                                         // Wraps process_message in catch_unwind so a panic
                                         // in context building, tool execution, or provider
                                         // parsing doesn't kill the per-chat worker loop.
@@ -4880,6 +4897,10 @@ Just type a message to chat with the AI agent.",
                                         )
                                         .catch_unwind()
                                         .await;
+
+                                        // Stop the typing indicator loop.
+                                        typing_stop.store(true, Ordering::Relaxed);
+                                        typing_handle.abort();
 
                                         match process_result {
                                             Ok(Ok((mut reply, turn_usage))) => {
