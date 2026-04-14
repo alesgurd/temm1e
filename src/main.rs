@@ -3,6 +3,8 @@ use std::panic::AssertUnwindSafe;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
+mod search_install;
+
 use anyhow::Result;
 use async_trait::async_trait;
 use base64::Engine as _;
@@ -132,6 +134,17 @@ enum Commands {
         #[command(subcommand)]
         command: EigentuneCommands,
     },
+    /// Manage web search integrations (install SearXNG, list backends)
+    Search {
+        #[command(subcommand)]
+        command: SearchCommands,
+    },
+}
+
+#[derive(Subcommand)]
+enum SearchCommands {
+    /// Install and configure SearXNG locally via Docker/Podman for unlimited general web search
+    Install,
 }
 
 #[derive(Subcommand)]
@@ -409,7 +422,12 @@ const SYSTEM_PROMPT_BODY: &str = "\
 You have full access to these tools:\n\
 - shell: run any command\n\
 - file_read / file_write / file_list: filesystem operations\n\
-- web_fetch: HTTP GET requests\n\
+- web_fetch: HTTP GET requests against a known URL\n\
+- web_search: search the web across 13 backends (hackernews, wikipedia, github, \
+  stackoverflow, reddit, marginalia, arxiv, pubmed, duckduckgo — all free, no key; \
+  plus searxng/exa/brave/tavily if user opts in). ONE tool, auto-picks default mix, \
+  retry with backends=[...] for specific sources. Use for finding current info, \
+  documentation, code, or facts not in training data.\n\
 - browser: control a real Chrome browser (navigate, click, type, screenshot, \
   get_text, evaluate JS, get_html) — use this for any website interaction\n\
 - send_message: send real-time messages to the user during tasks\n\
@@ -1549,6 +1567,9 @@ async fn main() -> Result<()> {
     if !_is_tui {
         tracing::info!(mode = %cli.mode, "TEMM1E starting");
     }
+
+    // Initialize file safety guards (captures running binary path for self-protection)
+    temm1e_tools::file_safety::init();
 
     match cli.command {
         Commands::Stop => {
@@ -7811,6 +7832,11 @@ Just type a message to chat with the AI agent.",
         Commands::Eigentune { command } => {
             handle_eigentune_command(config_path, command).await?;
         }
+        Commands::Search { command } => match command {
+            SearchCommands::Install => {
+                search_install::run_install().await?;
+            }
+        },
     }
 
     Ok(())
